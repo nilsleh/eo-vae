@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "EO-VAE"
+version = "0.1.0"
+description = "EO-VAE."
+authors = [
+    { name = "Nils Lehmann", email = "n.lehmann@tum.de" },
+    { name = "Zhitong Xiong", email = "xiongzhitong@gmail.com" }
+]
+
+maintainers = [
+    { name = "Nils Lehmann", email = "n.lehmann@tum.de" },
+    { name = "Zhitong Xiong", email = "xiongzhitong@gmail.com" }
+]
+
+
+dependencies = [
+    "torch>=2.1.2",
+    "torchvision==0.16.2",
+    "numpy==1.26.4",
+    "lightning>=2.4.0",
+    "wandb",
+    "ruff",
+    "python-dotenv",
+    "omegaconf",
+    "hydra-core",
+    "torchgeo @ git+https://github.com/microsoft/torchgeo.git",
+]
+
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+fix = true
+
+[tool.ruff.format]
+quote-style = "single"
+skip-magic-trailing-comma = true
+
+[tool.ruff.lint]
+extend-select = ["ANN", "D", "I", "RUF", "UP"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"docs/**" = ["ANN", "D"]
+"experiments/**" = ["D"]
+"tests/**" = ["D"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
