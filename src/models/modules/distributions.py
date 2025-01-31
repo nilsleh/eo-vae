@@ -42,7 +42,9 @@ class DiagonalGaussianDistribution(object):
         )
         return x
 
-    def kl(self, other: 'DiagonalGaussianDistribution' | None = None) -> torch.Tensor:
+    def kl(
+        self, other: type['DiagonalGaussianDistribution'] | None = None
+    ) -> torch.Tensor:
         """Compute KL divergence to another distribution.
 
         Args:

@@ -6,18 +6,25 @@
 
 
 import torch
+import os
 from lightning import LightningModule
 import torch.nn.functional as F
 from typing import Any
+from torchvision.datasets.utils import download_url
 
-from modules.distributions import DiagonalGaussianDistribution
+from .modules.distributions import DiagonalGaussianDistribution
 
 
 class AutoencoderKL(LightningModule):
+    # that checkpoint works together with this config
+    # https://github.com/CompVis/latent-diffusion/blob/main/configs/autoencoder/autoencoder_kl_32x32x4.yaml
+    hf_url = 'https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.ckpt'
+
     def __init__(
         self,
-        ddconfig: dict[str, Any],
-        lossconfig: dict[str, Any],
+        encoder: torch.nn.Module,
+        decoder: torch.nn.Module,
+        loss_fn: torch.nn.Module,
         embed_dim: int,
         ckpt_path: str | None = None,
         ignore_keys: list[str] = [],
@@ -28,7 +35,7 @@ class AutoencoderKL(LightningModule):
         """Initialize the KL-regularized Autoencoder.
 
         Args:
-            ddconfig: Configuration dictionary for encoder/decoder architecture
+            # ddconfig: Configuration dictionary for encoder/decoder architecture
             lossconfig: Configuration dictionary for loss function
             embed_dim: Dimension of the latent embedding space
             ckpt_path: Path to checkpoint file for loading pretrained weights
@@ -42,20 +49,21 @@ class AutoencoderKL(LightningModule):
         """
         super().__init__()
         self.image_key = image_key
-        self.encoder = Encoder(**ddconfig)
-        self.decoder = Decoder(**ddconfig)
-        self.loss = instantiate_from_config(lossconfig)
-        assert ddconfig['double_z']
-        self.quant_conv = torch.nn.Conv2d(2 * ddconfig['z_channels'], 2 * embed_dim, 1)
-        self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig['z_channels'], 1)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.loss = loss_fn
+
+        self.z_channels = self.encoder.z_channels
+        self.quant_conv = torch.nn.Conv2d(2 * self.z_channels, 2 * embed_dim, 1)
+        self.post_quant_conv = torch.nn.Conv2d(embed_dim, self.z_channels, 1)
         self.embed_dim = embed_dim
         if colorize_nlabels is not None:
             assert type(colorize_nlabels) == int
             self.register_buffer('colorize', torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+
+        self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     def init_from_ckpt(self, path, ignore_keys=list()) -> None:
         """
@@ -68,6 +76,12 @@ class AutoencoderKL(LightningModule):
         Returns:
             None
         """
+        if path is None:
+            path = 'vae-ft-mse-840000-ema-pruned.ckpt'
+            # get the Huggingface checkpoint
+            if not os.path.exists(path):
+                download_url(self.hf_url, '.', path)
+
         sd = torch.load(path, map_location='cpu')['state_dict']
         keys = list(sd.keys())
         for k in keys:
@@ -109,7 +123,7 @@ class AutoencoderKL(LightningModule):
 
     def forward(
         self, input: torch.Tensor, sample_posterior: bool = True
-    ) -> Tuple[torch.Tensor, DiagonalGaussianDistribution]:
+    ) -> tuple[torch.Tensor, DiagonalGaussianDistribution]:
         """
         Forward pass through the autoencoder.
 

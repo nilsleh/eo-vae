@@ -1,0 +1,33 @@
+model:
+  _target_: src.models.autoencoder.AutoencoderKL
+  loss_fn:
+    _target_: src.models.modules.MyLossFunction
+
+  embed_dim: 4
+  
+  encoder:
+    _target_: src.models.Encoder
+    double_z: True
+    z_channels: 4
+    resolution: 256
+    in_channels: 3
+    out_ch: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+    num_res_blocks: 2
+    attn_resolutions: [ ]
+    dropout: 0.0
+
+  decoder:
+    _target_: src.models.Decoder
+    double_z: True
+    z_channels: 4
+    resolution: 256
+    in_channels: 3
+    out_ch: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+    num_res_blocks: 2
+    attn_resolutions: [ ]
+    dropout: 0.0
+
