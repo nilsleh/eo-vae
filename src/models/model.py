@@ -300,12 +300,11 @@ class Encoder(nn.Module):
             padding=1,
         )
 
-    def forward(self, x):
+    def forward(self, x, wvs):
         # timestep embedding
         temb = None
 
         # downsampling
-        wvs = torch.FloatTensor([0.665, 0.56, 0.49, 0.49]).to(x.device)
         hs = [self.conv_in(x, wvs)]
         #hs = [self.conv_in(x)]
         
@@ -433,7 +432,7 @@ class Decoder(nn.Module):
         self.conv_out.weight_generator.load_state_dict(wg_weights["weight_generator"])
         self.conv_out.fclayer.load_state_dict(wg_weights["fclayer"])
 
-    def forward(self, z):
+    def forward(self, z, wvs):
         # assert z.shape[1:] == self.z_shape[1:]
         self.last_z_shape = z.shape
 
@@ -463,7 +462,6 @@ class Decoder(nn.Module):
 
         h = self.norm_out(h)
         h = nonlinearity(h)
-        wvs = torch.FloatTensor([0.665, 0.56, 0.49, 0.49]).to(z.device)
         h = self.conv_out(h,wvs)
         #h = self.conv_out(h)
         if self.tanh_out:

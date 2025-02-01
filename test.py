@@ -28,10 +28,12 @@ for idx, sample in enumerate(dataloader):
     pil_image.save(f"img_{idx}.png")
 
     x = x.cuda()
-    x_2 = torch.ones([1,4,512,512]).cuda()
-    x_2[:,:3,...] = x
-    x_2[:,-1,...] = x[:,-1,...]
-    out,_ = model(x_2)
+    wvs = torch.FloatTensor([0.665, 0.56, 0.49]).to(x.device)
+    x_2 = torch.ones([1,3,512,512]).cuda()
+    x_2[:,0,...] = x[:,0,...]
+    x_2[:,1,...] = x[:,0,...]
+    x_2[:,2,...] = x[:,0,...]
+    out,_ = model(x_2, wvs)
     out = out[:,:3,...]
     pil_image = to_pil(out.squeeze())
     pil_image.save(f"decode_img_{idx}.png")
