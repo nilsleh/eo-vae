@@ -4,13 +4,14 @@ import numpy as np
 from typing import List, Tuple
 
 from .modules.layers import (
-    Normalize, 
-    nonlinearity, 
-    ResnetBlock, 
-    Upsample, 
+    Normalize,
+    nonlinearity,
+    ResnetBlock,
+    Upsample,
     Downsample,
-    make_attn
+    make_attn,
 )
+
 
 class Encoder(nn.Module):
     def __init__(
@@ -142,6 +143,7 @@ class Encoder(nn.Module):
         h = nonlinearity(h)
         h = self.conv_out(h)
         return h
+
 
 class Decoder(nn.Module):
     def __init__(

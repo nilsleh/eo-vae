@@ -3,12 +3,12 @@ import torch.nn as nn
 import math
 
 
-
 def Normalize(in_channels: int, num_groups: int = 32) -> nn.Module:
     """Group normalization with default of 32 groups."""
     return torch.nn.GroupNorm(
         num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True
     )
+
 
 class Upsample(nn.Module):
     def __init__(self, in_channels: int, with_conv: bool):
@@ -31,6 +31,7 @@ class Upsample(nn.Module):
         if self.with_conv:
             x = self.conv(x)
         return x
+
 
 class Downsample(nn.Module):
     def __init__(self, in_channels: int, with_conv: bool):
@@ -57,9 +58,17 @@ class Downsample(nn.Module):
             x = torch.nn.functional.avg_pool2d(x, kernel_size=2, stride=2)
         return x
 
+
 class ResnetBlock(nn.Module):
-    def __init__(self, *, in_channels: int, out_channels: int = None, 
-                 conv_shortcut: bool = False, dropout: float, temb_channels: int = 512):
+    def __init__(
+        self,
+        *,
+        in_channels: int,
+        out_channels: int = None,
+        conv_shortcut: bool = False,
+        dropout: float,
+        temb_channels: int = 512,
+    ):
         """
         ResNet block with optional time embedding.
 
@@ -77,17 +86,25 @@ class ResnetBlock(nn.Module):
         self.use_conv_shortcut = conv_shortcut
 
         self.norm1 = Normalize(in_channels)
-        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.conv1 = torch.nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+        )
         if temb_channels > 0:
             self.temb_proj = torch.nn.Linear(temb_channels, out_channels)
         self.norm2 = Normalize(out_channels)
         self.dropout = torch.nn.Dropout(dropout)
-        self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.conv2 = torch.nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1
+        )
         if self.in_channels != self.out_channels:
             if self.use_conv_shortcut:
-                self.conv_shortcut = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+                self.conv_shortcut = torch.nn.Conv2d(
+                    in_channels, out_channels, kernel_size=3, stride=1, padding=1
+                )
             else:
-                self.nin_shortcut = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
+                self.nin_shortcut = torch.nn.Conv2d(
+                    in_channels, out_channels, kernel_size=1, stride=1, padding=0
+                )
 
     def forward(self, x: torch.Tensor, temb: torch.Tensor = None) -> torch.Tensor:
         h = x
@@ -110,7 +127,8 @@ class ResnetBlock(nn.Module):
                 x = self.nin_shortcut(x)
 
         return x + h
-    
+
+
 class AttnBlock(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -155,7 +173,7 @@ class AttnBlock(nn.Module):
         h_ = self.proj_out(h_)
 
         return x + h_
-    
+
 
 def make_attn(in_channels, attn_type='vanilla'):
     assert attn_type in ['vanilla', 'linear', 'none'], f'attn_type {attn_type} unknown'
@@ -167,6 +185,7 @@ def make_attn(in_channels, attn_type='vanilla'):
     else:
         # return LinAttnBlock(in_channels)
         pass
+
 
 def nonlinearity(x):
     """Swish activation function."""
