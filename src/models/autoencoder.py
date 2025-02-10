@@ -92,7 +92,7 @@ class AutoencoderKL(LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f'Restored from {path}')
 
-    def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
+    def encode(self, x: torch.Tensor, wvs: torch.Tensor) -> DiagonalGaussianDistribution:
         """
         Encode input tensor to latent representation.
 
@@ -102,12 +102,12 @@ class AutoencoderKL(LightningModule):
         Returns:
             Posterior distribution in latent space
         """
-        h = self.encoder(x)
+        h = self.encoder(x, wvs)
         moments = self.quant_conv(h)
         posterior = DiagonalGaussianDistribution(moments)
         return posterior
 
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
+    def decode(self, z: torch.Tensor, wvs: torch.Tensor) -> torch.Tensor:
         """
         Decode latent representation to image space.
 
@@ -118,11 +118,11 @@ class AutoencoderKL(LightningModule):
             Decoded tensor in image space [B, C, H, W]
         """
         z = self.post_quant_conv(z)
-        dec = self.decoder(z)
+        dec = self.decoder(z, wvs)
         return dec
 
     def forward(
-        self, input: torch.Tensor, sample_posterior: bool = True
+        self, input: torch.Tensor, wvs: torch.Tensor, sample_posterior: bool = True
     ) -> tuple[torch.Tensor, DiagonalGaussianDistribution]:
         """
         Forward pass through the autoencoder.
@@ -134,12 +134,12 @@ class AutoencoderKL(LightningModule):
         Returns:
             Tuple of (decoded tensor, posterior distribution)
         """
-        posterior = self.encode(input)
+        posterior = self.encode(input, wvs)
         if sample_posterior:
             z = posterior.sample()
         else:
             z = posterior.mode()
-        dec = self.decode(z)
+        dec = self.decode(z, wvs)
         return dec, posterior
 
     def get_input(self, batch: dict[str, torch.Tensor], k: str) -> torch.Tensor:
