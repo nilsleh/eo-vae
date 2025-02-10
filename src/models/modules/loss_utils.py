@@ -11,7 +11,12 @@ from taming.util import get_ckpt_path
 class LPIPS(nn.Module):
     """Learned Perceptual Image Patch Similarity metric with variable network architecture."""
 
-    def __init__(self, net: nn.Module, scaling_layer: nn.Module | None = None, use_dropout: bool = True) -> None:
+    def __init__(
+        self,
+        net: nn.Module,
+        scaling_layer: nn.Module | None = None,
+        use_dropout: bool = True,
+    ) -> None:
         """Initialize LPIPS model.
 
         Args:
@@ -34,7 +39,6 @@ class LPIPS(nn.Module):
         for param in self.parameters():
             param.requires_grad = False
 
-
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Calculate perceptual distance between images.
 
@@ -52,10 +56,16 @@ class LPIPS(nn.Module):
         lins = [self.lin0, self.lin1, self.lin2, self.lin3, self.lin4]
 
         for kk in range(len(self.chns)):
-            feats0[kk], feats1[kk] = normalize_tensor(outs0[kk]), normalize_tensor(outs1[kk])
+            feats0[kk], feats1[kk] = (
+                normalize_tensor(outs0[kk]),
+                normalize_tensor(outs1[kk]),
+            )
             diffs[kk] = (feats0[kk] - feats1[kk]) ** 2
 
-        res = [spatial_average(lins[kk].model(diffs[kk]), keepdim=True) for kk in range(len(self.chns))]
+        res = [
+            spatial_average(lins[kk].model(diffs[kk]), keepdim=True)
+            for kk in range(len(self.chns))
+        ]
         val = res[0]
         for l in range(1, len(self.chns)):
             val += res[l]
@@ -63,25 +73,25 @@ class LPIPS(nn.Module):
 
 
 class NetLinLayer(nn.Module):
-    """ A single linear layer which does a 1x1 conv """
+    """A single linear layer which does a 1x1 conv"""
+
     def __init__(self, chn_in, chn_out=1, use_dropout=False):
         """Initialize single 1x1 conv layer.
-        
+
         Args:
             chn_in: Number of input channels
             chn_out: Number of output channels
             use_dropout: Whether to use dropout
         """
         super(NetLinLayer, self).__init__()
-        layers = [nn.Dropout(), ] if (use_dropout) else []
-        layers += [nn.Conv2d(chn_in, chn_out, 1, stride=1, padding=0, bias=False), ]
+        layers = [nn.Dropout()] if (use_dropout) else []
+        layers += [nn.Conv2d(chn_in, chn_out, 1, stride=1, padding=0, bias=False)]
         self.model = nn.Sequential(*layers)
 
 
-
-def normalize_tensor(x: Tensor,eps: float=1e-10):
+def normalize_tensor(x: Tensor, eps: float = 1e-10):
     """Normalize tensor by its L2 norm.
-    
+
     Args:
         x: Input tensor
         eps: Epsilon value for numerical stability
@@ -89,13 +99,13 @@ def normalize_tensor(x: Tensor,eps: float=1e-10):
     Returns:
         Normalized tensor
     """
-    norm_factor = torch.sqrt(torch.sum(x**2,dim=1,keepdim=True))
-    return x/(norm_factor+eps)
+    norm_factor = torch.sqrt(torch.sum(x**2, dim=1, keepdim=True))
+    return x / (norm_factor + eps)
 
 
-def spatial_average(x: Tensor, keepdim: bool=True):
+def spatial_average(x: Tensor, keepdim: bool = True):
     """Calculate spatial average of tensor.
-    
+
     Args:
         x: Input tensor
         keepdim: Whether to keep dimensions
@@ -103,11 +113,12 @@ def spatial_average(x: Tensor, keepdim: bool=True):
     Returns:
         Spatial average tensor
     """
-    return x.mean([2,3],keepdim=keepdim)
+    return x.mean([2, 3], keepdim=keepdim)
 
 
-
-def adopt_weight(weight: float, global_step: int, threshold: int = 0, value: float = 0.) -> float:
+def adopt_weight(
+    weight: float, global_step: int, threshold: int = 0, value: float = 0.0
+) -> float:
     """Adopt weight value based on global step.
 
     Args:
@@ -134,13 +145,15 @@ def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.
     Returns:
         Hinge loss value
     """
-    loss_real = torch.mean(F.relu(1. - logits_real))
-    loss_fake = torch.mean(F.relu(1. + logits_fake))
+    loss_real = torch.mean(F.relu(1.0 - logits_real))
+    loss_fake = torch.mean(F.relu(1.0 + logits_fake))
     d_loss = 0.5 * (loss_real + loss_fake)
     return d_loss
 
 
-def vanilla_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.Tensor:
+def vanilla_d_loss(
+    logits_real: torch.Tensor, logits_fake: torch.Tensor
+) -> torch.Tensor:
     """Calculate vanilla GAN loss for discriminator.
 
     Args:
@@ -151,14 +164,16 @@ def vanilla_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torc
         Vanilla GAN loss value
     """
     d_loss = 0.5 * (
-        torch.mean(torch.nn.functional.softplus(-logits_real)) +
-        torch.mean(torch.nn.functional.softplus(logits_fake)))
+        torch.mean(torch.nn.functional.softplus(-logits_real))
+        + torch.mean(torch.nn.functional.softplus(logits_fake))
+    )
     return d_loss
 
 
 # https://github.com/CompVis/taming-transformers/blob/master/taming/modules/discriminator/model.py
 
 # GAN discriminator
+
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -171,8 +186,9 @@ def weights_init(m):
 
 class NLayerDiscriminator(nn.Module):
     """Defines a PatchGAN discriminator as in Pix2Pix
-        --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
+    --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
     """
+
     def __init__(self, input_nc=3, ndf=64, n_layers=3, use_actnorm=False):
         """Construct a PatchGAN discriminator
         Parameters:
@@ -186,35 +202,55 @@ class NLayerDiscriminator(nn.Module):
             norm_layer = nn.BatchNorm2d
         else:
             norm_layer = ActNorm
-        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+        if (
+            type(norm_layer) == functools.partial
+        ):  # no need to use bias as BatchNorm2d has affine parameters
             use_bias = norm_layer.func != nn.BatchNorm2d
         else:
             use_bias = norm_layer != nn.BatchNorm2d
 
         kw = 4
         padw = 1
-        sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
+        sequence = [
+            nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
+            nn.LeakyReLU(0.2, True),
+        ]
         nf_mult = 1
         nf_mult_prev = 1
         for n in range(1, n_layers):  # gradually increase the number of filters
             nf_mult_prev = nf_mult
-            nf_mult = min(2 ** n, 8)
+            nf_mult = min(2**n, 8)
             sequence += [
-                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                nn.Conv2d(
+                    ndf * nf_mult_prev,
+                    ndf * nf_mult,
+                    kernel_size=kw,
+                    stride=2,
+                    padding=padw,
+                    bias=use_bias,
+                ),
                 norm_layer(ndf * nf_mult),
-                nn.LeakyReLU(0.2, True)
+                nn.LeakyReLU(0.2, True),
             ]
 
         nf_mult_prev = nf_mult
-        nf_mult = min(2 ** n_layers, 8)
+        nf_mult = min(2**n_layers, 8)
         sequence += [
-            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+            nn.Conv2d(
+                ndf * nf_mult_prev,
+                ndf * nf_mult,
+                kernel_size=kw,
+                stride=1,
+                padding=padw,
+                bias=use_bias,
+            ),
             norm_layer(ndf * nf_mult),
-            nn.LeakyReLU(0.2, True)
+            nn.LeakyReLU(0.2, True),
         ]
 
         sequence += [
-            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+        ]  # output 1 channel prediction map
         self.main = nn.Sequential(*sequence)
 
     def forward(self, input):

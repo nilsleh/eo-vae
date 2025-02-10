@@ -28,7 +28,7 @@ def get_1d_sincos_pos_embed_from_grid_torch(embed_dim: int, pos: Tensor) -> Tens
     omega = 1.0 / 10000**omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
-    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+    out = torch.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
 
     emb_sin = torch.sin(out)  # (M, D/2)
     emb_cos = torch.cos(out)  # (M, D/2)
@@ -36,19 +36,20 @@ def get_1d_sincos_pos_embed_from_grid_torch(embed_dim: int, pos: Tensor) -> Tens
     emb = torch.cat([emb_sin, emb_cos], dim=1)  # (M, D)
     return emb
 
+
 class TransformerWeightGenerator(nn.Module):
     """Transformer-based dynamic weight generator.
-    
+
     Generates weights and biases for dynamic convolutions using a transformer architecture.
     """
 
     def __init__(
-        self, 
-        input_dim: int, 
-        output_dim: int, 
-        embed_dim: int, 
-        num_heads: int = 4, 
-        num_layers: int = 1
+        self,
+        input_dim: int,
+        output_dim: int,
+        embed_dim: int,
+        num_heads: int = 4,
+        num_layers: int = 1,
     ) -> None:
         """Initialize the weight generator.
 
@@ -63,7 +64,7 @@ class TransformerWeightGenerator(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=input_dim,
             nhead=num_heads,
-            activation="gelu",
+            activation='gelu',
             norm_first=False,
             batch_first=False,
             dropout=False,
@@ -109,13 +110,19 @@ class TransformerWeightGenerator(nn.Module):
 
 class TransformerWeightGenerator_decoder(TransformerWeightGenerator):
     """Decoder version of transformer-based weight generator with modified bias generation.
-    
+
     Inherits from TransformerWeightGenerator but modifies the bias generation to output
     a single channel.
     """
-    
-    def __init__(self, input_dim: int, output_dim: int, embed_dim: int, 
-                 num_heads: int = 4, num_layers: int = 1) -> None:
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        embed_dim: int,
+        num_heads: int = 4,
+        num_layers: int = 1,
+    ) -> None:
         """Initialize the decoder weight generator.
 
         Args:
@@ -125,7 +132,9 @@ class TransformerWeightGenerator_decoder(TransformerWeightGenerator):
             num_heads: Number of attention heads
             num_layers: Number of transformer layers
         """
-        super(TransformerWeightGenerator_decoder, self).__init__(input_dim, output_dim, embed_dim, num_heads=num_heads, num_layers=num_layers)
+        super(TransformerWeightGenerator_decoder, self).__init__(
+            input_dim, output_dim, embed_dim, num_heads=num_heads, num_layers=num_layers
+        )
         self.fc_bias = nn.Linear(input_dim, 1)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -146,7 +155,8 @@ class TransformerWeightGenerator_decoder(TransformerWeightGenerator):
         transformer_output = self.transformer_encoder(x)
         weights = self.fc_weight(transformer_output[self.wt_num : -1] + pos_wave)
         bias = self.fc_bias(
-            transformer_output[self.wt_num : -1] + self.bias_token.repeat((pos_wave.shape[0],1))
+            transformer_output[self.wt_num : -1]
+            + self.bias_token.repeat((pos_wave.shape[0], 1))
         )  # Using the last output to generate bias
         return weights, bias
 
@@ -164,12 +174,10 @@ class Basic1d(nn.Module):
         """
         super().__init__()
         conv = nn.Linear(in_channels, out_channels, bias)
-        self.conv = nn.Sequential(
-            conv,
-        )
+        self.conv = nn.Sequential(conv)
         if not bias:
-            self.conv.add_module("ln", nn.LayerNorm(out_channels))
-        self.conv.add_module("relu", nn.ReLU(inplace=True))
+            self.conv.add_module('ln', nn.LayerNorm(out_channels))
+        self.conv.add_module('relu', nn.ReLU(inplace=True))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through conv block.
@@ -216,11 +224,19 @@ class FCResLayer(nn.Module):
         out = x + y
         return out
 
+
 class DynamicConv(nn.Module):
     """Dynamic convolution layer with wavelength-dependent kernels."""
 
-    def __init__(self, wv_planes: int, inter_dim: int = 128, kernel_size: int = 3, 
-                 stride: int = 1, padding: int = 1, embed_dim: int = 128) -> None:
+    def __init__(
+        self,
+        wv_planes: int,
+        inter_dim: int = 128,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        embed_dim: int = 128,
+    ) -> None:
         """Initialize dynamic convolution.
 
         Args:
@@ -289,15 +305,23 @@ class DynamicConv(nn.Module):
         weight, bias = self._get_weights(waves)  # 3x3x3
 
         # small bug fixed
-        dynamic_weight = weight.view(inplanes, self.kernel_size, self.kernel_size, self.embed_dim)
-        dynamic_weight = dynamic_weight.permute([3,0,1,2])
+        dynamic_weight = weight.view(
+            inplanes, self.kernel_size, self.kernel_size, self.embed_dim
+        )
+        dynamic_weight = dynamic_weight.permute([3, 0, 1, 2])
 
         if bias is not None:
             bias = bias.view([self.embed_dim]) * self.scaler
 
         weights = dynamic_weight * self.scaler
 
-        dynamic_out = F.conv2d(img_feat, weights, bias=bias, stride=(self.stride, self.stride), padding=self.padding)
+        dynamic_out = F.conv2d(
+            img_feat,
+            weights,
+            bias=bias,
+            stride=(self.stride, self.stride),
+            padding=self.padding,
+        )
 
         return dynamic_out
 
@@ -305,8 +329,15 @@ class DynamicConv(nn.Module):
 class DynamicConv_decoder(nn.Module):
     """Decoder version of dynamic convolution with modified bias handling."""
 
-    def __init__(self, wv_planes: int, inter_dim: int = 128, kernel_size: int = 3,
-                 stride: int = 1, padding: int = 1, embed_dim: int = 128) -> None:
+    def __init__(
+        self,
+        wv_planes: int,
+        inter_dim: int = 128,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        embed_dim: int = 128,
+    ) -> None:
         """Initialize decoder dynamic convolution.
 
         Args:
@@ -347,7 +378,7 @@ class DynamicConv_decoder(nn.Module):
         """Initialize weights of linear layers using Xavier initialization.
 
         Args:
-            m: 
+            m:
         """
         if isinstance(m, nn.Linear):
             init.xavier_uniform_(m.weight)
@@ -369,15 +400,17 @@ class DynamicConv_decoder(nn.Module):
             Convolved features [B, num_wavelengths, H', W']
         """
         inplanes = waves.size(0)
-        #wv_feats: 9,128 -> 9, 3x3x3
+        # wv_feats: 9,128 -> 9, 3x3x3
         self.scaler = 0.1
-        waves = get_1d_sincos_pos_embed_from_grid_torch(self.wv_planes, waves*1000)
+        waves = get_1d_sincos_pos_embed_from_grid_torch(self.wv_planes, waves * 1000)
         waves = self.fclayer(waves)
-        weight,bias = self._get_weights(waves) #3x3x3
+        weight, bias = self._get_weights(waves)  # 3x3x3
 
         # small bug fixed
-        dynamic_weight = weight.view(inplanes, self.kernel_size, self.kernel_size, self.embed_dim)
-        dynamic_weight = dynamic_weight.permute([0,3,1,2])
+        dynamic_weight = weight.view(
+            inplanes, self.kernel_size, self.kernel_size, self.embed_dim
+        )
+        dynamic_weight = dynamic_weight.permute([0, 3, 1, 2])
 
         if bias is not None:
             bias = bias.squeeze() * self.scaler
@@ -385,26 +418,33 @@ class DynamicConv_decoder(nn.Module):
         weights = dynamic_weight * self.scaler
         bias = bias * self.scaler
 
-        dynamic_out = F.conv2d(img_feat, weights, bias=bias, stride=(self.stride, self.stride), padding=self.padding)
+        dynamic_out = F.conv2d(
+            img_feat,
+            weights,
+            bias=bias,
+            stride=(self.stride, self.stride),
+            padding=self.padding,
+        )
 
         return dynamic_out
 
-if __name__ == "__main__":
-    embed_dim = 768
-    #dconv = DynamicConv(wv_planes=128, inter_dim=128, kernel_size=3, embed_dim=embed_dim).cuda()
-    inp = torch.randn([1,3,224,224]).cuda()
-    conv_in = torch.nn.Conv2d(
-        3, 128, kernel_size=3, stride=1, padding=1
-    ).cuda()
-    print(conv_in(inp).shape)
-    inp = torch.randn([1,8,224,224]).cuda()
-    dconv_in = DynamicConv(
-            wv_planes=128, inter_dim=128, kernel_size=3, stride=1, padding=1, embed_dim=128
-    ).cuda()
-    wvs = torch.FloatTensor([0.665, 0.56, 0.49, 0.665, 0.56, 0.49, 0.665, 0.56]).to(inp.device)
-    print(dconv_in(inp,wvs).shape)
 
-    inp = torch.randn([1,128,224,224]).cuda()
+if __name__ == '__main__':
+    embed_dim = 768
+    # dconv = DynamicConv(wv_planes=128, inter_dim=128, kernel_size=3, embed_dim=embed_dim).cuda()
+    inp = torch.randn([1, 3, 224, 224]).cuda()
+    conv_in = torch.nn.Conv2d(3, 128, kernel_size=3, stride=1, padding=1).cuda()
+    print(conv_in(inp).shape)
+    inp = torch.randn([1, 8, 224, 224]).cuda()
+    dconv_in = DynamicConv(
+        wv_planes=128, inter_dim=128, kernel_size=3, stride=1, padding=1, embed_dim=128
+    ).cuda()
+    wvs = torch.FloatTensor([0.665, 0.56, 0.49, 0.665, 0.56, 0.49, 0.665, 0.56]).to(
+        inp.device
+    )
+    print(dconv_in(inp, wvs).shape)
+
+    inp = torch.randn([1, 128, 224, 224]).cuda()
     dconv_decoder = DynamicConv_decoder(
         wv_planes=128, inter_dim=128, kernel_size=3, stride=1, padding=1, embed_dim=128
     ).cuda()

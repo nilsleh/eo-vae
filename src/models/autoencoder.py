@@ -90,7 +90,9 @@ class AutoencoderKL(LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f'Restored from {path}')
 
-    def encode(self, x: torch.Tensor, wvs: torch.Tensor) -> DiagonalGaussianDistribution:
+    def encode(
+        self, x: torch.Tensor, wvs: torch.Tensor
+    ) -> DiagonalGaussianDistribution:
         """
         Encode input tensor to latent representation.
 

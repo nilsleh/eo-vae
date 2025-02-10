@@ -69,18 +69,25 @@ class Encoder(nn.Module):
         self.z_channels = z_channels
 
         # downsampling
-        #self.conv_in = torch.nn.Conv2d(
+        # self.conv_in = torch.nn.Conv2d(
         #    in_channels, self.ch, kernel_size=3, stride=1, padding=1
-        #)
+        # )
         #'''
         self.conv_in = DynamicConv(
-            wv_planes=128, inter_dim=128, kernel_size=3, stride=1, padding=1, embed_dim=self.ch
+            wv_planes=128,
+            inter_dim=128,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            embed_dim=self.ch,
         )
 
         # TODO: if training
-        wg_weights = torch.load('/home/xshadow/Datasets/eo-vae/src/models/encoder_dconv_weight_generator_init_0.01_er50k.pt')
-        self.conv_in.weight_generator.load_state_dict(wg_weights["weight_generator"])
-        self.conv_in.fclayer.load_state_dict(wg_weights["fclayer"])
+        wg_weights = torch.load(
+            '/home/xshadow/Datasets/eo-vae/src/models/encoder_dconv_weight_generator_init_0.01_er50k.pt'
+        )
+        self.conv_in.weight_generator.load_state_dict(wg_weights['weight_generator'])
+        self.conv_in.fclayer.load_state_dict(wg_weights['fclayer'])
         #'''
 
         curr_res = resolution
@@ -144,8 +151,8 @@ class Encoder(nn.Module):
 
         # downsampling
         hs = [self.conv_in(x, wvs)]
-        #hs = [self.conv_in(x)]
-        
+        # hs = [self.conv_in(x)]
+
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
                 h = self.down[i_level].block[i_block](hs[-1], temb)
@@ -276,15 +283,22 @@ class Decoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        #self.conv_out = torch.nn.Conv2d(
+        # self.conv_out = torch.nn.Conv2d(
         #    block_in, out_ch, kernel_size=3, stride=1, padding=1
-        #)
+        # )
         self.conv_out = DynamicConv_decoder(
-            wv_planes=128, inter_dim=128, kernel_size=3, stride=1, padding=1, embed_dim=block_in
+            wv_planes=128,
+            inter_dim=128,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            embed_dim=block_in,
         )
-        wg_weights = torch.load('/home/xshadow/Datasets/eo-vae/src/models/decoder_dconv_weight_generator_init_0.01_er50k.pt')
-        self.conv_out.weight_generator.load_state_dict(wg_weights["weight_generator"])
-        self.conv_out.fclayer.load_state_dict(wg_weights["fclayer"])
+        wg_weights = torch.load(
+            '/home/xshadow/Datasets/eo-vae/src/models/decoder_dconv_weight_generator_init_0.01_er50k.pt'
+        )
+        self.conv_out.weight_generator.load_state_dict(wg_weights['weight_generator'])
+        self.conv_out.fclayer.load_state_dict(wg_weights['fclayer'])
 
     def forward(self, z, wvs):
         # assert z.shape[1:] == self.z_shape[1:]
@@ -316,8 +330,8 @@ class Decoder(nn.Module):
 
         h = self.norm_out(h)
         h = nonlinearity(h)
-        h = self.conv_out(h,wvs)
-        #h = self.conv_out(h)
+        h = self.conv_out(h, wvs)
+        # h = self.conv_out(h)
         if self.tanh_out:
             h = torch.tanh(h)
         return h
