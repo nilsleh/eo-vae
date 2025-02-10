@@ -1,7 +1,7 @@
 model:
   _target_: src.models.autoencoder.AutoencoderKL
   loss_fn:
-    _target_: src.models.modules.MyLossFunction
+    _target_: src.models.modules.LPIPSWithDiscriminator
 
   embed_dim: 4
   

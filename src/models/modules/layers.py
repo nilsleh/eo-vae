@@ -1,3 +1,9 @@
+# MIT License
+
+# Copyright (c) 2022 Machine Vision and Learning Group, LMU Munich
+
+# Based on code: https://github.com/CompVis/latent-diffusion/blob/main/ldm/modules/encoders/modules.py
+
 import torch
 import torch.nn as nn
 import math

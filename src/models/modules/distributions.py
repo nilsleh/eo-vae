@@ -1,5 +1,9 @@
+# MIT License
+
+# Copyright (c) 2022 Machine Vision and Learning Group, LMU Munich
+
 # Based on https://github.com/CompVis/latent-diffusion/blob/main/ldm/models/autoencoder.py
-# which is released under MIT-License
+
 # - Adopted to support newer torch version
 # - added docstrings and type annotations
 # - adopted for anysensor inputs

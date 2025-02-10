@@ -1,5 +1,8 @@
 # Based on https://github.com/CompVis/latent-diffusion/blob/main/ldm/models/autoencoder.py
-# which is released under MIT-License
+# MIT License
+
+# Copyright (c) 2022 Machine Vision and Learning Group, LMU Munich
+
 # - Adopted to support newer torch/lightning versions
 # - added docstrings and type annotations
 # - adopted for anysensor inputs
@@ -35,17 +38,15 @@ class AutoencoderKL(LightningModule):
         """Initialize the KL-regularized Autoencoder.
 
         Args:
-            # ddconfig: Configuration dictionary for encoder/decoder architecture
-            lossconfig: Configuration dictionary for loss function
+            encoder: Encoder module to use for encoding input into latent space
+            decoder: Decoder module to use for decoding latent representation
+            loss_fn: Loss function to use for training
             embed_dim: Dimension of the latent embedding space
             ckpt_path: Path to checkpoint file for loading pretrained weights
             ignore_keys: List of keys to ignore when loading checkpoint
             image_key: Key used to access images in the input batch
             colorize_nlabels: Number of labels for colorization feature
             monitor: Metric to monitor during training
-
-        Returns:
-            None
         """
         super().__init__()
         self.image_key = image_key
@@ -72,9 +73,6 @@ class AutoencoderKL(LightningModule):
         Args:
             path: Path to the checkpoint file containing model weights
             ignore_keys: List of keys to ignore when loading the state dict
-
-        Returns:
-            None
         """
         if path is None:
             path = 'vae-ft-mse-840000-ema-pruned.ckpt'
