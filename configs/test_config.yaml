@@ -1,12 +1,25 @@
 model:
-  _target_: src.models.autoencoder.AutoencoderKL
+  _target_: eo_vae.models.autoencoder.AutoencoderKL
   loss_fn:
-    _target_: src.models.modules.LPIPSWithDiscriminator
+    _target_: eo_vae.models.modules.LPIPSWithDiscriminator
+    perceptual_loss:
+      _target_: eo_vae.models.modules.LPIPS
+      net:
+        _target_: torchgeo.models.dofa.dofa_base_patch16_224
+        weights: 
+          _target_: eo_vae.utils.utils.enum_resolver
+          _args_:
+            - torchgeo.models.dofa
+            - DOFABase16_Weights
+            - DOFA_MAE
+    discriminator:
+      _target_: torchgeo.models.dofa_base_patch16_224 # scratch DOFA
+    disc_start: 5
 
   embed_dim: 4
   
   encoder:
-    _target_: src.models.Encoder
+    _target_: eo_vae.models.Encoder
     double_z: True
     z_channels: 4
     resolution: 256
@@ -19,7 +32,7 @@ model:
     dropout: 0.0
 
   decoder:
-    _target_: src.models.Decoder
+    _target_: eo_vae.models.Decoder
     double_z: True
     z_channels: 4
     resolution: 256

@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from torch import Tensor
 import torch.nn.functional as F
 import torch.nn.init as init
 from einops import rearrange
@@ -85,14 +86,14 @@ class TransformerWeightGenerator(nn.Module):
         torch.nn.init.normal_(self.weight_tokens, std=0.02)
         torch.nn.init.normal_(self.bias_token, std=0.02)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """Generate dynamic weights and biases.
 
         Args:
             x: Input features [seq_len, batch, input_dim]
 
         Returns:
-            Tuple of:
+            tuple of:
                 - Generated weights [seq_len, output_dim]
                 - Generated bias [embed_dim]
         """
@@ -137,14 +138,14 @@ class TransformerWeightGenerator_decoder(TransformerWeightGenerator):
         )
         self.fc_bias = nn.Linear(input_dim, 1)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """Generate weights and single-channel bias.
 
         Args:
             x: Input features [seq_len, batch, input_dim]
 
         Returns:
-            Tuple of:
+            tuple of:
                 - Generated weights [seq_len, output_dim]
                 - Generated bias [1]
         """
@@ -179,7 +180,7 @@ class Basic1d(nn.Module):
             self.conv.add_module('ln', nn.LayerNorm(out_channels))
         self.conv.add_module('relu', nn.ReLU(inplace=True))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """Forward pass through conv block.
 
         Args:
@@ -208,7 +209,7 @@ class FCResLayer(nn.Module):
         self.w1 = nn.Linear(self.l_size, self.l_size)
         self.w2 = nn.Linear(self.l_size, self.l_size)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """Forward pass through residual layer.
 
         Args:
@@ -288,7 +289,7 @@ class DynamicConv(nn.Module):
         self.weight_generator.apply(self.weight_init)
         self.fclayer.apply(self.weight_init)
 
-    def forward(self, img_feat: torch.Tensor, wvs: torch.Tensor) -> torch.Tensor:
+    def forward(self, img_feat: Tensor, wvs: Tensor) -> Tensor:
         """Apply dynamic convolution.
 
         Args:
@@ -389,7 +390,7 @@ class DynamicConv_decoder(nn.Module):
         self.weight_generator.apply(self.weight_init)
         self.fclayer.apply(self.weight_init)
 
-    def forward(self, img_feat: torch.Tensor, waves: torch.Tensor) -> torch.Tensor:
+    def forward(self, img_feat: Tensor, waves: Tensor) -> Tensor:
         """Apply decoder dynamic convolution.
 
         Args:

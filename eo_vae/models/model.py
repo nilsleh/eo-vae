@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from einops import rearrange
-from .dynamic_conv import DynamicConv, DynamicConv_decoder
+from .modules.dynamic_conv import DynamicConv, DynamicConv_decoder
 from typing import List, Tuple
 
 
@@ -41,8 +41,7 @@ class Encoder(nn.Module):
         double_z: bool = True,
         **ignore_kwargs,
     ):
-        """
-        Encoder module that downsamples input images to latent representations.
+        """Encoder module that downsamples input images to latent representations.
 
         Args:
             ch: Base channel count
@@ -83,11 +82,12 @@ class Encoder(nn.Module):
         )
 
         # TODO: if training
-        wg_weights = torch.load(
-            '/home/xshadow/Datasets/eo-vae/src/models/encoder_dconv_weight_generator_init_0.01_er50k.pt'
-        )
-        self.conv_in.weight_generator.load_state_dict(wg_weights['weight_generator'])
-        self.conv_in.fclayer.load_state_dict(wg_weights['fclayer'])
+        # TODO need to handle this without fixed paths
+        # wg_weights = torch.load(
+        #     '/home/xshadow/Datasets/eo-vae/src/models/encoder_dconv_weight_generator_init_0.01_er50k.pt'
+        # )
+        # self.conv_in.weight_generator.load_state_dict(wg_weights['weight_generator'])
+        # self.conv_in.fclayer.load_state_dict(wg_weights['fclayer'])
         #'''
 
         curr_res = resolution
@@ -193,8 +193,7 @@ class Decoder(nn.Module):
         tanh_out: bool = False,
         **ignorekwargs,
     ):
-        """
-        Decoder module that upsamples latent representations to images.
+        """Decoder module that upsamples latent representations to images.
 
         Args:
             ch: Base channel count
@@ -294,11 +293,13 @@ class Decoder(nn.Module):
             padding=1,
             embed_dim=block_in,
         )
-        wg_weights = torch.load(
-            '/home/xshadow/Datasets/eo-vae/src/models/decoder_dconv_weight_generator_init_0.01_er50k.pt'
-        )
-        self.conv_out.weight_generator.load_state_dict(wg_weights['weight_generator'])
-        self.conv_out.fclayer.load_state_dict(wg_weights['fclayer'])
+        # TODO
+        # need to handle this without fixed paths
+        # wg_weights = torch.load(
+        #     '/home/xshadow/Datasets/eo-vae/src/models/decoder_dconv_weight_generator_init_0.01_er50k.pt'
+        # )
+        # self.conv_out.weight_generator.load_state_dict(wg_weights['weight_generator'])
+        # self.conv_out.fclayer.load_state_dict(wg_weights['fclayer'])
 
     def forward(self, z, wvs):
         # assert z.shape[1:] == self.z_shape[1:]

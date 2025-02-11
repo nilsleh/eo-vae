@@ -2,10 +2,9 @@
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torchvision import models
 from collections import namedtuple
-
-from taming.util import get_ckpt_path
 
 
 class LPIPS(nn.Module):
@@ -35,7 +34,7 @@ class LPIPS(nn.Module):
         self.lin2 = NetLinLayer(self.chns[2], use_dropout=use_dropout)
         self.lin3 = NetLinLayer(self.chns[3], use_dropout=use_dropout)
         self.lin4 = NetLinLayer(self.chns[4], use_dropout=use_dropout)
-        self.load_from_pretrained()
+      
         for param in self.parameters():
             param.requires_grad = False
 
@@ -75,7 +74,7 @@ class LPIPS(nn.Module):
 class NetLinLayer(nn.Module):
     """A single linear layer which does a 1x1 conv"""
 
-    def __init__(self, chn_in, chn_out=1, use_dropout=False):
+    def __init__(self, chn_in: int, chn_out: int=1, use_dropout: bool=False):
         """Initialize single 1x1 conv layer.
 
         Args:

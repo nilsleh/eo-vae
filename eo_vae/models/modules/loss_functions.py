@@ -6,6 +6,8 @@
 
 import torch
 import torch.nn as nn
+from typing import Any, Tuple
+from torch import Tensor
 
 from .loss_utils import LPIPS, hinge_d_loss, vanilla_d_loss, adopt_weight
 
@@ -16,6 +18,7 @@ class LPIPSWithDiscriminator(nn.Module):
     def __init__(
         self,
         perceptual_loss: nn.Module,
+        discriminator: nn.Module,
         disc_start: int,
         logvar_init: float = 0.0,
         kl_weight: float = 1.0,
@@ -32,7 +35,9 @@ class LPIPSWithDiscriminator(nn.Module):
         """Initialize combined loss function.
 
         Args:
-            perceptual_loss: Perceptual loss module
+            perceptual_loss: Perceptual loss module, should be the LPIPS module
+                with a desired pretrained net
+            discriminator: Discriminator module
             disc_start: Step to start discriminator training
             logvar_init: Initial log variance
             kl_weight: Weight for KL divergence term
@@ -57,9 +62,7 @@ class LPIPSWithDiscriminator(nn.Module):
         # output log variance
         self.logvar = nn.Parameter(torch.ones(size=()) * logvar_init)
 
-        self.discriminator = NLayerDiscriminator(
-            input_nc=disc_in_channels, n_layers=disc_num_layers, use_actnorm=use_actnorm
-        ).apply(weights_init)
+        self.discriminator = discriminator
         self.discriminator_iter_start = disc_start
         self.disc_loss = hinge_d_loss if disc_loss == 'hinge' else vanilla_d_loss
         self.disc_factor = disc_factor
@@ -97,16 +100,16 @@ class LPIPSWithDiscriminator(nn.Module):
 
     def forward(
         self,
-        inputs: torch.Tensor,
-        reconstructions: torch.Tensor,
+        inputs: Tensor,
+        reconstructions: Tensor,
         posteriors: Any,
         optimizer_idx: int,
         global_step: int,
-        last_layer: Optional[torch.nn.Parameter] = None,
-        cond: Optional[torch.Tensor] = None,
+        last_layer: torch.nn.Parameter | None = None,
+        cond: Tensor | None = None,
         split: str = 'train',
-        weights: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, dict]:
+        weights: Tensor | None = None,
+    ) -> tuple[Tensor, dict]:
         """Calculate combined loss.
 
         Args:
@@ -210,14 +213,3 @@ class LPIPSWithDiscriminator(nn.Module):
                 '{}/logits_fake'.format(split): logits_fake.detach().mean(),
             }
             return d_loss, log
-
-
-import torch
-
-
-class MyLossFunction(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return torch.sum(torch.pow(x - y, 2))

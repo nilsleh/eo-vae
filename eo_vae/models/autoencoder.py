@@ -12,6 +12,7 @@ import torch
 import os
 from lightning import LightningModule
 import torch.nn.functional as F
+from torch import Tensor
 from typing import Any
 from torchvision.datasets.utils import download_url
 
