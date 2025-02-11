@@ -4,6 +4,8 @@
 
 # Based on: https://github.com/CompVis/latent-diffusion/blob/main/ldm/modules/losses/contperceptual.py
 
+# Adapted to work with DOFA model and input wavelengths
+
 import torch
 import torch.nn as nn
 from typing import Any, Tuple
@@ -105,6 +107,7 @@ class LPIPSWithDiscriminator(nn.Module):
         posteriors: Any,
         optimizer_idx: int,
         global_step: int,
+        wvs: Tensor,
         last_layer: torch.nn.Parameter | None = None,
         cond: Tensor | None = None,
         split: str = 'train',
@@ -118,6 +121,7 @@ class LPIPSWithDiscriminator(nn.Module):
             posteriors: Posterior distributions
             optimizer_idx: Index of optimizer (0=generator, 1=discriminator)
             global_step: Current training step
+            wvs: Wavelengths of input images for perceptual loss
             last_layer: Last layer for adaptive weight calculation
             cond: Conditional input if using conditional GAN
             split: Dataset split name
@@ -128,10 +132,12 @@ class LPIPSWithDiscriminator(nn.Module):
                 - Combined loss value
                 - Dictionary of logging information
         """
-        rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
+        rec_loss = torch.abs(
+            inputs.contiguous() - reconstructions.contiguous()
+        )  # L1 Loss
         if self.perceptual_weight > 0:
             p_loss = self.perceptual_loss(
-                inputs.contiguous(), reconstructions.contiguous()
+                input=inputs.contiguous(), target=reconstructions.contiguous(), wvs=wvs
             )
             rec_loss = rec_loss + self.perceptual_weight * p_loss
 
@@ -149,12 +155,14 @@ class LPIPSWithDiscriminator(nn.Module):
             # generator update
             if cond is None:
                 assert not self.disc_conditional
-                logits_fake = self.discriminator(reconstructions.contiguous())
+                logits_fake = self.discriminator(reconstructions.contiguous(), wvs)
             else:
                 assert self.disc_conditional
                 logits_fake = self.discriminator(
-                    torch.cat((reconstructions.contiguous(), cond), dim=1)
+                    torch.cat((reconstructions.contiguous(), cond), dim=1), wvs
                 )
+
+            # This needs to be the Generator?
             g_loss = -torch.mean(logits_fake)
 
             if self.disc_factor > 0.0:
@@ -192,14 +200,16 @@ class LPIPSWithDiscriminator(nn.Module):
         if optimizer_idx == 1:
             # second pass for discriminator update
             if cond is None:
-                logits_real = self.discriminator(inputs.contiguous().detach())
-                logits_fake = self.discriminator(reconstructions.contiguous().detach())
+                logits_real = self.discriminator(inputs.contiguous().detach(), wvs)
+                logits_fake = self.discriminator(
+                    reconstructions.contiguous().detach(), wvs
+                )
             else:
                 logits_real = self.discriminator(
-                    torch.cat((inputs.contiguous().detach(), cond), dim=1)
+                    torch.cat((inputs.contiguous().detach(), cond), dim=1), wvs
                 )
                 logits_fake = self.discriminator(
-                    torch.cat((reconstructions.contiguous().detach(), cond), dim=1)
+                    torch.cat((reconstructions.contiguous().detach(), cond), dim=1), wvs
                 )
 
             disc_factor = adopt_weight(

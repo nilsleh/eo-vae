@@ -5,7 +5,6 @@ from hydra.utils import instantiate
 import torch
 
 
-
 class TestVAE:
     @pytest.fixture
     def model(self):
@@ -20,16 +19,21 @@ class TestVAE:
     def test_forward(self, model):
         """Test forward pass of VAE model."""
         x = torch.randn(1, 3, 224, 224)
-        wv = torch.randn(1, 3)
+        wv = torch.randn(3)
 
         recon, posterior = model(x, wv)
         assert isinstance(recon, torch.Tensor)
         assert recon.shape == x.shape
 
-# import pickle
-# out = pickle.load(open("/mnt/rg_climate_benchmark/data/cc_benchmark/classification_v1.0/m-so2sat/task_specs.pkl", "rb"))
+    def test_training_step(self, model):
+        """Test training step of VAE model."""
+        batch = {'image': torch.randn(1, 3, 224, 224), 'wvs': torch.randn(3)}
 
-# import pdb
-# pdb.set_trace()
+        # generator
+        gen_loss = model.training_step(batch, 0, 0)
 
-# print(0)
+        # discriminator
+        disc_loss = model.training_step(batch, 0, 1)
+
+        assert isinstance(gen_loss, torch.Tensor)
+        assert isinstance(disc_loss, torch.Tensor)

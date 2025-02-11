@@ -5,16 +5,14 @@ model:
     perceptual_loss:
       _target_: eo_vae.models.modules.LPIPS
       net:
-        _target_: torchgeo.models.dofa.dofa_base_patch16_224
-        weights: 
-          _target_: eo_vae.utils.utils.enum_resolver
-          _args_:
-            - torchgeo.models.dofa
-            - DOFABase16_Weights
-            - DOFA_MAE
+        _target_: eo_vae.models.dofa.dofa_base_patch16_224
+        pretrained: True
     discriminator:
-      _target_: torchgeo.models.dofa_base_patch16_224 # scratch DOFA
+      _target_: eo_vae.models.modules.loss_utils.NLayerDiscriminator
+    # set other loss params
     disc_start: 5
+    kl_weight: 0.000001
+    disc_weight: 0.5
 
   embed_dim: 4
   

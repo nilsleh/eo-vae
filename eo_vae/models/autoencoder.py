@@ -99,6 +99,7 @@ class AutoencoderKL(LightningModule):
 
         Args:
             x: Input tensor to encode [B, C, H, W]
+            wvs: wavelengths values fo channels
 
         Returns:
             Posterior distribution in latent space
@@ -143,23 +144,6 @@ class AutoencoderKL(LightningModule):
         dec = self.decode(z, wvs)
         return dec, posterior
 
-    def get_input(self, batch: dict[str, torch.Tensor], k: str) -> torch.Tensor:
-        """
-        Extract and process input tensor from batch.
-
-        Args:
-            batch: Dictionary containing batch data
-            k: Key to extract from batch
-
-        Returns:
-            Processed input tensor [B, C, H, W]
-        """
-        x = batch[k]
-        if len(x.shape) == 3:
-            x = x[..., None]
-        x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
-        return x
-
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int, optimizer_idx: int
     ) -> torch.Tensor:
@@ -174,8 +158,9 @@ class AutoencoderKL(LightningModule):
         Returns:
             Loss value for current step
         """
-        inputs = self.get_input(batch, self.image_key)
-        reconstructions, posterior = self(inputs)
+        inputs = batch[self.image_key]
+        wvs = batch['wvs']
+        reconstructions, posterior = self(inputs, wvs)
 
         if optimizer_idx == 0:
             # train encoder+decoder+logvar
@@ -185,6 +170,7 @@ class AutoencoderKL(LightningModule):
                 posterior,
                 optimizer_idx,
                 self.global_step,
+                wvs=wvs,
                 last_layer=self.get_last_layer(),
                 split='train',
             )
@@ -209,6 +195,7 @@ class AutoencoderKL(LightningModule):
                 posterior,
                 optimizer_idx,
                 self.global_step,
+                wvs=wvs,
                 last_layer=self.get_last_layer(),
                 split='train',
             )
@@ -239,8 +226,8 @@ class AutoencoderKL(LightningModule):
         Returns:
             Dictionary of logged metrics
         """
-        inputs = self.get_input(batch, self.image_key)
-        reconstructions, posterior = self(inputs)
+        inputs = batch[self.image_key]
+        reconstructions, posterior = self(inputs, batch['wvs'])
         aeloss, log_dict_ae = self.loss(
             inputs,
             reconstructions,
@@ -312,6 +299,7 @@ class AutoencoderKL(LightningModule):
         Returns:
             Dictionary containing input, reconstructed and sampled images
         """
+        # TODO not gonna work for all satellite imagery
         log = dict()
         x = self.get_input(batch, self.image_key)
         x = x.to(self.device)

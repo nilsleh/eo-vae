@@ -1,10 +1,17 @@
-"""Stripped version of https://github.com/richzhang/PerceptualSimilarity/tree/master/models"""
+# https://github.com/CompVis/taming-transformers/blob/3ba01b241669f5ade541ce990f7650a3b8f65318/taming/modules/losses/lpips.py#L11
+# Copyright (c) 2020 Patrick Esser and Robin Rombach and Björn Ommer
+# MIT License
+# Adapted from above to work with DOFA model
 
+from functools import partial
 import torch
+import torch.nn.functional as F
+
 import torch.nn as nn
 from torch import Tensor
 from torchvision import models
 from collections import namedtuple
+from .dynamic_conv import DynamicConv
 
 
 class LPIPS(nn.Module):
@@ -26,33 +33,39 @@ class LPIPS(nn.Module):
         super().__init__()
         self.scaling_layer = scaling_layer
         self.net = net
-        # TODO retrieve chns from net it
 
-        self.chns = [64, 128, 256, 512, 512]  # vg16 features
-        self.lin0 = NetLinLayer(self.chns[0], use_dropout=use_dropout)
-        self.lin1 = NetLinLayer(self.chns[1], use_dropout=use_dropout)
-        self.lin2 = NetLinLayer(self.chns[2], use_dropout=use_dropout)
-        self.lin3 = NetLinLayer(self.chns[3], use_dropout=use_dropout)
-        self.lin4 = NetLinLayer(self.chns[4], use_dropout=use_dropout)
-      
+        self.chns = [768] * 12  # DOFA has 12 output layers
+
+        # generate NetLinLayers dynamically according to self.chns
+        for i, chn in enumerate(self.chns):
+            setattr(self, f'lin{i}', NetLinLayer(chn, use_dropout=use_dropout))
+
         for param in self.parameters():
             param.requires_grad = False
 
-    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: Tensor, wvs: Tensor, target: Tensor) -> Tensor:
         """Calculate perceptual distance between images.
 
         Args:
             input: Input images [B, C, H, W]
+            wavelengths: Wavelengths of input images
             target: Target images [B, C, H, W]
 
         Returns:
             Perceptual distance value
         """
-        in0_input, in1_input = (self.scaling_layer(input), self.scaling_layer(target))
+        if self.scaling_layer is not None:
+            in0_input, in1_input = (
+                self.scaling_layer(input),
+                self.scaling_layer(target),
+            )
+        else:
+            in0_input, in1_input = (input, target)
 
-        outs0, outs1 = self.net(in0_input), self.net(in1_input)
+        outs0, outs1 = self.net(in0_input, wvs), self.net(in1_input, wvs)
         feats0, feats1, diffs = {}, {}, {}
-        lins = [self.lin0, self.lin1, self.lin2, self.lin3, self.lin4]
+        # lins = [self.lin0, self.lin1, self.lin2, self.lin3, self.lin4]
+        lins = [getattr(self, f'lin{i}') for i in range(len(self.chns))]
 
         for kk in range(len(self.chns)):
             feats0[kk], feats1[kk] = (
@@ -74,7 +87,7 @@ class LPIPS(nn.Module):
 class NetLinLayer(nn.Module):
     """A single linear layer which does a 1x1 conv"""
 
-    def __init__(self, chn_in: int, chn_out: int=1, use_dropout: bool=False):
+    def __init__(self, chn_in: int, chn_out: int = 1, use_dropout: bool = False):
         """Initialize single 1x1 conv layer.
 
         Args:
@@ -134,7 +147,7 @@ def adopt_weight(
     return weight
 
 
-def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.Tensor:
+def hinge_d_loss(logits_real: Tensor, logits_fake: Tensor) -> Tensor:
     """Calculate hinge loss for discriminator.
 
     Args:
@@ -150,9 +163,7 @@ def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.
     return d_loss
 
 
-def vanilla_d_loss(
-    logits_real: torch.Tensor, logits_fake: torch.Tensor
-) -> torch.Tensor:
+def vanilla_d_loss(logits_real: Tensor, logits_fake: Tensor) -> Tensor:
     """Calculate vanilla GAN loss for discriminator.
 
     Args:
@@ -183,6 +194,9 @@ def weights_init(m):
         nn.init.constant_(m.bias.data, 0)
 
 
+# TODO, adapt this with DOFA input layer?
+
+
 class NLayerDiscriminator(nn.Module):
     """Defines a PatchGAN discriminator as in Pix2Pix
     --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
@@ -202,7 +216,7 @@ class NLayerDiscriminator(nn.Module):
         else:
             norm_layer = ActNorm
         if (
-            type(norm_layer) == functools.partial
+            type(norm_layer) == partial
         ):  # no need to use bias as BatchNorm2d has affine parameters
             use_bias = norm_layer.func != nn.BatchNorm2d
         else:
@@ -250,8 +264,26 @@ class NLayerDiscriminator(nn.Module):
         sequence += [
             nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
         ]  # output 1 channel prediction map
-        self.main = nn.Sequential(*sequence)
+        self.main_net = nn.Sequential(*sequence)
 
-    def forward(self, input):
-        """Standard forward."""
-        return self.main(input)
+        # add dynamic convolution input layer to process input
+        self.conv_in = DynamicConv(
+            wv_planes=128,
+            inter_dim=128,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            embed_dim=input_nc,
+        )
+
+    def forward(self, input: Tensor, wvs: Tensor) -> Tensor:
+        """Standard forward.
+
+        Args:
+            input: input tensor
+            wvs: Wavelengths of input tensor
+
+        Returns:
+            output tensor
+        """
+        return self.main_net(self.conv_in(input, wvs))

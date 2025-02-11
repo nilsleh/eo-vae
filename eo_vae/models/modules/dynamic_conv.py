@@ -305,7 +305,6 @@ class DynamicConv(nn.Module):
         waves = self.fclayer(waves)
         weight, bias = self._get_weights(waves)  # 3x3x3
 
-        # small bug fixed
         dynamic_weight = weight.view(
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
         )
@@ -426,6 +425,9 @@ class DynamicConv_decoder(nn.Module):
             stride=(self.stride, self.stride),
             padding=self.padding,
         )
+
+        # temporarily set current weight so it can be accesses
+        self.weight = weights
 
         return dynamic_out
 
