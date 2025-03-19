@@ -63,11 +63,11 @@ wandb:
 
 trainer:
   _target_: lightning.Trainer
-  max_epochs: 100
+  max_epochs: 400
   accelerator: gpu
-  # strategy: ddp
-  # devices: [0, 1, 2, 3]
-  devices: [0]
+  strategy: ddp_find_unused_parameters_true
+  devices: [0, 1]
+  # devices: [0]
   # accumulate_grad_batches: 2
   # gradient_clip_val: 1.0
   log_every_n_steps: 20
