@@ -1,23 +1,10 @@
 from .distributions import DiagonalGaussianDistribution
-from .loss_functions import LPIPSWithDiscriminator
-from .loss_utils import LPIPS
-from .layers import (
-    Normalize,
-    nonlinearity,
-    ResnetBlock,
-    Upsample,
-    Downsample,
-    make_attn,
-)
+from .loss_functions import EOGenerativeLoss
+from .loss_utils import DOFALPIPS, DOFADiscriminator
 
 all = (
+    'EOGenerativeLoss',
+    'DOFADiscriminator',
+    'DOFALPIPS',
     'DiagonalGaussianDistribution',
-    'LPIPS',
-    'LPIPSWithDiscriminator',
-    'Normalize',
-    'nonlinearity',
-    'ResnetBlock',
-    'Upsample',
-    'Downsample',
-    'make_attn',
 )

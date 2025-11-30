@@ -3,15 +3,12 @@
 
 """SeasoNet datamodule."""
 
-import os
 from typing import Any
-import torch
 
 import kornia.augmentation as K
-from torch.utils.data import Subset
-
-from torchgeo.datasets import SeasoNet
+import torch
 from torchgeo.datamodules.geo import NonGeoDataModule
+from torchgeo.datasets import SeasoNet
 
 
 class SeasoNetWithWaves(SeasoNet):
@@ -31,7 +28,7 @@ class SeasoNetWithWaves(SeasoNet):
         sample['wvs'] = self.wvs.float()
         # import pdb
         # pdb.set_trace()
-        sample["image"] = sample["image"] / 3000
+        sample['image'] = sample['image'] / 3000
         return sample
 
 

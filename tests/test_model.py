@@ -1,8 +1,9 @@
-import pytest
-from omegaconf import OmegaConf
 import os
-from hydra.utils import instantiate
+
+import pytest
 import torch
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 
 class TestVAE:

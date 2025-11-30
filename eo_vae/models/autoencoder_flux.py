@@ -1,0 +1,619 @@
+import math
+import os
+
+import torch
+import torch.nn.functional as F
+from einops import rearrange
+from lightning import LightningModule
+from safetensors import safe_open
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
+
+from .modules.distributions import DiagonalGaussianDistribution
+
+
+def get_cosine_schedule_with_warmup(
+    optimizer: Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    base_lr: float,
+    final_lr: float,
+    num_cycles: float = 0.5,
+) -> LambdaLR:
+    """Create a schedule with linear warmup and cosine decay.
+
+    Args:
+        optimizer: The optimizer to schedule
+        num_warmup_steps: Number of warmup steps
+        num_training_steps: Total number of training steps
+        base_lr: Initial learning rate after warmup
+        final_lr: Final learning rate after decay
+        num_cycles: Number of cosine cycles (0.5 for half cycle)
+
+    Returns:
+        LambdaLR scheduler
+    """
+    import math
+
+    def lr_lambda(current_step: int):
+        if current_step < num_warmup_steps:
+            # Linear warmup
+            return float(current_step) / float(max(1, num_warmup_steps))
+
+        # Cosine decay
+        progress = float(current_step - num_warmup_steps) / float(
+            max(1, num_training_steps - num_warmup_steps)
+        )
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * num_cycles * 2.0 * progress))
+
+        # Scale between base_lr and final_lr
+        lr_scale = (base_lr - final_lr) * cosine_decay + final_lr
+        return lr_scale / base_lr  # Return ratio for scheduler
+
+    return LambdaLR(optimizer, lr_lambda)
+
+
+class FluxAutoencoderKL(LightningModule):
+    def __init__(
+        self,
+        encoder: torch.nn.Module,
+        decoder: torch.nn.Module,
+        loss_fn: torch.nn.Module,
+        ckpt_path: str | None = None,
+        training_mode: str = 'finetune',  # 'distill' or 'finetune'
+        ignore_keys: list[str] = [],
+        image_key: str = 'image',
+        freeze_body: bool = True,
+        base_lr: float = 1e-4,
+        final_lr_sched: float | None = None,
+        warmup_epochs: int | None = None,
+        decay_end_epoch: int | None = None,
+        clip_grad: float | None = None,
+    ) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.loss_fn = loss_fn
+        self.training_mode = training_mode
+        self.image_key = image_key
+        self.warmup_epochs = warmup_epochs
+        self.decay_end_epoch = decay_end_epoch
+        self.base_lr = base_lr
+        self.final_lr_sched = final_lr_sched
+        self.clip_grad = clip_grad
+
+        self.automatic_optimization = False
+
+        # --- FLUX Specific Latent Stats ---
+        self.ps = [2, 2]
+        self.bn_eps = 1e-4
+        # Calculate expected latent dim based on patch size
+        self.bn = torch.nn.BatchNorm2d(
+            math.prod(self.ps) * encoder.z_channels,
+            affine=False,
+            track_running_stats=True,
+        )
+
+        self.freeze_body = freeze_body
+        if self.freeze_body:
+            self._freeze_main_body()
+
+        # --- Initialization ---
+        self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+
+    # =========================================================
+    #  INITIALIZATION & LOADING
+    # =========================================================
+    def _freeze_main_body(self):
+        """Locks the pre-trained VAE body (ResNets, Attentions, QuantConv).
+        Only keeps the Dynamic Input/Output layers trainable.
+        """
+        print('--- FREEZING VAE BODY (Phase 2 Mode) ---')
+
+        # 1. Freeze EVERYTHING first
+        for p in self.encoder.parameters():
+            p.requires_grad = False
+        for p in self.decoder.parameters():
+            p.requires_grad = False
+
+        # 2. Unfreeze ONLY Dynamic Layers
+        if self.encoder.use_dynamic_ops:
+            for p in self.encoder.conv_in.parameters():
+                p.requires_grad = True
+            print(' -> Encoder Dynamic Input: UNLOCKED')
+
+        if self.decoder.use_dynamic_ops:
+            for p in self.decoder.conv_out.parameters():
+                p.requires_grad = True
+            print(' -> Decoder Dynamic Output: UNLOCKED')
+
+    def init_from_ckpt(self, path, ignore_keys=list()) -> None:
+        if not path or not os.path.exists(path):
+            return
+
+        print(f'Loading {self.training_mode} weights from {path}...')
+
+        # 1. Load State Dict (Handle .safetensors and .ckpt/.pt)
+        sd = {}
+        if path.endswith('safetensors'):
+            with safe_open(path, framework='pt', device='cpu') as f:
+                for k in f.keys():
+                    sd[k] = f.get_tensor(k)
+        else:
+            sd = torch.load(path, map_location='cpu')
+            sd = sd.get('state_dict', sd)  # Unwrap if nested
+
+        # 2. Distillation Setup: Intercept Teacher Weights
+        if self.training_mode == 'distill':
+            self._register_teacher_weights(sd)
+
+        # 3. Filter Keys (Remove static layers if dynamic, remove ignore_keys)
+        keys = list(sd.keys())
+        for k in keys:
+            # Skip static input/output weights if using dynamic ops
+            if self.encoder.use_dynamic_ops and 'encoder.conv_in' in k:
+                del sd[k]
+                continue
+            if self.decoder.use_dynamic_ops and 'decoder.conv_out' in k:
+                del sd[k]
+                continue
+
+            # User-specified ignore keys
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    del sd[k]
+                    break
+
+        # 4. Load
+        missing, unexpected = self.load_state_dict(sd, strict=False)
+
+        # 5. RUN VERIFICATION
+        self._verify_loading(missing, unexpected, ignore_keys)
+
+    def _verify_loading(self, missing_keys, unexpected_keys, user_ignore_keys):
+        """Ensures that 'missing_keys' ONLY contains the dynamic layers we expected to miss,
+        and that the VAE Body (ResNets, Attentions) was loaded correctly.
+        """
+        critical_errors = []
+
+        # Define what we EXPECT to be missing based on config
+        allowed_missing_prefixes = []
+
+        if self.encoder.use_dynamic_ops:
+            allowed_missing_prefixes.append('encoder.conv_in')
+
+        if self.decoder.use_dynamic_ops:
+            allowed_missing_prefixes.append('decoder.conv_out')
+
+        # --- FIX: Allow Teacher Buffers to be missing ---
+        # Since we manually registered/filled them before loading,
+        # they won't be in the state_dict, and that is perfectly fine.
+        allowed_missing_prefixes.append('teacher_')
+
+        # Add user defined ignores
+        allowed_missing_prefixes.extend(user_ignore_keys)
+
+        # Check every missing key
+        for k in missing_keys:
+            # logic: is this key allowed to be missing?
+            is_allowed = False
+            for p in allowed_missing_prefixes:
+                if k.startswith(p):
+                    is_allowed = True
+                    break
+
+            # If it's NOT in our allowed list, it's a critical error.
+            if not is_allowed:
+                critical_errors.append(k)
+
+        if len(critical_errors) > 0:
+            raise RuntimeError(
+                f'FATAL: The checkpoint failed to load critical weights!\n'
+                f'The following keys are missing but were expected:\n{critical_errors[:20]}...\n'
+                f'(Total {len(critical_errors)} missing keys). Check your checkpoint path or architecture.'
+            )
+
+        print('Weights loaded successfully.')
+        print(
+            f' - Missing keys (Expected): {len(missing_keys)} (Dynamic Layers + Teachers)'
+        )
+        print(f' - Unexpected keys (Ignored): {len(unexpected_keys)}')
+
+    def _register_teacher_weights(self, sd):
+        """Extracts RGB weights AND BIASES from checkpoint for distillation."""
+
+        # Helper to safely get tensor or None
+        def get_tensor(key):
+            return sd.get(key, None)
+
+        enc_w, enc_b = (
+            get_tensor('encoder.conv_in.weight'),
+            get_tensor('encoder.conv_in.bias'),
+        )
+        dec_w, dec_b = (
+            get_tensor('decoder.conv_out.weight'),
+            get_tensor('decoder.conv_out.bias'),
+        )
+
+        if enc_w is None or dec_w is None:
+            raise ValueError(
+                'Distillation requires a checkpoint with standard RGB weights!'
+            )
+
+        self.register_buffer('teacher_enc_w', enc_w)
+        self.register_buffer('teacher_dec_w', dec_w)
+
+        if enc_b is not None:
+            self.register_buffer('teacher_enc_b', enc_b)
+        if dec_b is not None:
+            self.register_buffer('teacher_dec_b', dec_b)
+
+        print('Teacher weights & biases registered.')
+
+    def configure_optimizers(self):
+        # MODE A: DISTILLATION
+        if self.training_mode == 'distill':
+            params = list(self.encoder.conv_in.parameters()) + list(
+                self.decoder.conv_out.parameters()
+            )
+            opt = torch.optim.Adam(params, lr=self.base_lr)
+            return opt
+
+        # MODE B: FINETUNING (Phase 2 & 3)
+        else:
+            # Smart Filter: Only pass parameters that require gradients
+            # This handles both freeze_body=True and freeze_body=False automatically
+
+            ae_params = [p for p in self.encoder.parameters() if p.requires_grad] + [
+                p for p in self.decoder.parameters() if p.requires_grad
+            ]
+
+            disc_params = self.loss_fn.discriminator.parameters()
+
+            opt_ae = torch.optim.Adam(ae_params, lr=self.base_lr, betas=(0.5, 0.9))
+            opt_disc = torch.optim.Adam(disc_params, lr=self.base_lr, betas=(0.5, 0.9))
+
+            # Build schedulers
+            if (
+                self.final_lr_sched is not None
+                and self.warmup_epochs is not None
+                and self.decay_end_epoch is not None
+            ):
+                steps_per_epoch = 2000  # Estimate or compute from dataloader
+
+                num_warmup_steps = self.warmup_epochs * steps_per_epoch
+                num_training_steps = self.decay_end_epoch * steps_per_epoch
+
+                sch_ae = get_cosine_schedule_with_warmup(
+                    opt_ae,
+                    num_warmup_steps=num_warmup_steps,
+                    num_training_steps=num_training_steps,
+                    base_lr=self.base_lr,
+                    final_lr=self.final_lr_sched,
+                )
+                sch_disc = get_cosine_schedule_with_warmup(
+                    opt_disc,
+                    num_warmup_steps=num_warmup_steps,
+                    num_training_steps=num_training_steps,
+                    base_lr=self.base_lr,
+                    final_lr=self.final_lr_sched,
+                )
+                scheduler_list = [
+                    {'scheduler': sch_ae, 'interval': 'step'},
+                    {'scheduler': sch_disc, 'interval': 'step'},
+                ]
+
+                return [opt_ae, opt_disc], scheduler_list
+            else:
+                return [opt_ae, opt_disc]
+
+    # =========================================================
+    #  FORWARD PASS (Encode -> Shuffle -> Decode)
+    # =========================================================
+
+    def encode(
+        self, x: torch.Tensor, wvs: torch.Tensor
+    ) -> DiagonalGaussianDistribution:
+        moments = self.encoder(x, wvs)
+        return DiagonalGaussianDistribution(moments)
+
+    def decode(self, z: torch.Tensor, wvs: torch.Tensor) -> torch.Tensor:
+        # Flux Process: Inverse Normalize -> Unshuffle -> Decode
+        z = self.inv_normalize_latent(z)
+        z = rearrange(
+            z, '... (c pi pj) i j -> ... c (i pi) (j pj)', pi=self.ps[0], pj=self.ps[1]
+        )
+        return self.decoder(z, wvs)
+
+    def forward(
+        self, input: torch.Tensor, wvs: torch.Tensor, sample_posterior: bool = True
+    ):
+        posterior = self.encode(input, wvs)
+        z = posterior.sample() if sample_posterior else posterior.mode()
+
+        # Flux Process: Shuffle -> Normalize
+        z_shuffled = rearrange(
+            z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=self.ps[0], pj=self.ps[1]
+        )
+        z_normalized = self.normalize_latent(z_shuffled)
+
+        dec = self.decode(z_normalized, wvs)
+        return dec, posterior
+
+    def normalize_latent(self, z):
+        if self.training:
+            self.bn.train()
+        else:
+            self.bn.eval()
+        return self.bn(z)
+
+    def inv_normalize_latent(self, z):
+        self.bn.eval()
+        s = torch.sqrt(self.bn.running_var.view(1, -1, 1, 1) + self.bn_eps)
+        m = self.bn.running_mean.view(1, -1, 1, 1)
+        return z * s + m
+
+    # =========================================================
+    #  TRAINING & VALIDATION ROUTING
+    # =========================================================
+
+    def training_step(self, batch, batch_idx):
+        if self.training_mode == 'distill':
+            return self._training_step_distill(batch)
+        return self._training_step_finetune(batch)
+
+    def validation_step(self, batch, batch_idx):
+        if self.training_mode == 'distill':
+            return self._validation_step_distill(batch)
+        return self._validation_step_finetune(batch)
+
+    # =========================================================
+    #  MODE A: DISTILLATION
+    # =========================================================
+
+    def _training_step_distill(self, batch):
+        opt = self.optimizers()
+        opt.zero_grad()
+        loss, logs = self._compute_distill_loss()
+        self.manual_backward(loss)
+        opt.step()
+        self.log_dict(logs, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+        return loss
+
+    def _validation_step_distill(self, batch):
+        loss, logs = self._compute_distill_loss(split='val')
+        self.log_dict(logs, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        return loss
+
+    def _compute_distill_loss(self, split='train'):
+        # RGB Wavelengths in Microns (match SD weights Ch0=R, Ch1=G, Ch2=B)
+        rgb_wvs = torch.tensor([0.665, 0.560, 0.490], device=self.device)
+        total_loss = torch.tensor(0.0, device=self.device)
+        loss_calculated = False
+
+        # --- Encoder Distillation ---
+        if self.encoder.use_dynamic_ops:
+            # Use helper from DynamicConv to get exact weight/bias layout
+            s_enc_w, s_enc_b = self.encoder.conv_in.get_distillation_weight(rgb_wvs)
+
+            total_loss += F.mse_loss(s_enc_w, self.teacher_enc_w)
+            if s_enc_b is not None and hasattr(self, 'teacher_enc_b'):
+                total_loss += F.mse_loss(s_enc_b, self.teacher_enc_b)
+            loss_calculated = True
+
+        # --- Decoder Distillation ---
+        if self.decoder.use_dynamic_ops:
+            s_dec_w, s_dec_b = self.decoder.conv_out.get_distillation_weight(rgb_wvs)
+
+            total_loss += F.mse_loss(s_dec_w, self.teacher_dec_w)
+            if s_dec_b is not None and hasattr(self, 'teacher_dec_b'):
+                total_loss += F.mse_loss(s_dec_b, self.teacher_dec_b)
+            loss_calculated = True
+
+        # Safety: Ensure loss has grad even if dynamic ops disabled (prevents crash)
+        if not loss_calculated and not total_loss.requires_grad:
+            total_loss.requires_grad_(True)
+
+        return total_loss, {f'{split}/distill_loss': total_loss}
+
+    # =========================================================
+    #  MODE B: FINETUNING
+    # =========================================================
+
+    def _training_step_finetune(self, batch):
+        opt_ae, opt_disc = self.optimizers()
+        images = self.get_input(batch, self.image_key)
+        wvs = batch['wvs']
+
+        opts = self.optimizers()
+        opt_gen = opts[0]
+        opt_disc = opts[-1]  # Discriminator is always last
+        if len(opts) > 2:
+            opt_enc = opts[1]  # Encoder optimizer if tuning
+        else:
+            opt_enc = None
+
+        schs = self.lr_schedulers()
+        sch_gen = schs[0] if schs else None
+        sch_disc = schs[-1] if schs else None
+        if len(schs) > 2:
+            sch_enc = schs[1]
+        else:
+            sch_enc = None
+
+        # Determine if discriminator should be trained
+        train_disc = (
+            self.global_step >= self.loss_fn.disc_update_start_step
+            and self.loss_fn.disc_weight > 0.0
+        )
+
+        # =====================
+        # Generator Training
+        # =====================
+        opt_gen.zero_grad()
+        if hasattr(self.loss_fn, 'discriminator'):
+            self.loss_fn.discriminator.eval()
+
+        # Forward pass: encode and decode
+        # z = self.encode(images, **encoder_kwargs)
+        # recon = self.decode(z, wvs, use_ema=False)
+        recon, _ = self.forward(images, wvs)
+
+        # Compute generator loss
+        gen_loss, log_dict_gen = self.loss_fn(
+            inputs=images,
+            wvs=wvs,
+            reconstructions=recon,
+            optimizer_idx=0,
+            global_step=self.global_step,
+            last_layer=self.get_last_layer(),
+            split='train',
+        )
+
+        # Backward pass
+        self.manual_backward(gen_loss)
+
+        # Gradient clipping
+        if self.clip_grad is not None:
+            torch.nn.utils.clip_grad_norm_(
+                opt_gen.param_groups[0]['params'], self.clip_grad
+            )
+
+        opt_gen.step()
+        if sch_gen is not None:
+            sch_gen.step()
+
+        # Update EMA
+        # self.update_ema()
+
+        # =====================
+        # Discriminator Training
+        # =====================
+        if train_disc:
+            if hasattr(self.loss_fn, 'discriminator'):
+                self.loss_fn.discriminator.train()
+
+            disc_updates = getattr(self.loss_fn, 'disc_updates_per_step', 1)
+
+            for _ in range(disc_updates):
+                opt_disc.zero_grad()
+
+                # Re-compute reconstruction (detached)
+                recon_detached, _ = self.forward(images, wvs)
+
+                # Compute discriminator loss
+                disc_loss, log_dict_disc = self.loss_fn(
+                    inputs=images,
+                    wvs=wvs,
+                    reconstructions=recon_detached,
+                    optimizer_idx=1,
+                    global_step=self.global_step,
+                    split='train',
+                )
+
+                self.manual_backward(disc_loss)
+                opt_disc.step()
+
+            if sch_disc is not None:
+                sch_disc.step()
+
+            if hasattr(self.loss_fn, 'discriminator'):
+                self.loss_fn.discriminator.eval()
+        else:
+            # Create dummy log dict
+            log_dict_disc = {
+                'train/loss_disc': torch.tensor(0.0, device=images.device),
+                'train/logits_real': torch.tensor(0.0, device=images.device),
+                'train/logits_fake': torch.tensor(0.0, device=images.device),
+            }
+
+        # Logging
+        log_dict = {**log_dict_gen, **log_dict_disc}
+        log_dict['train/lr_gen'] = opt_gen.param_groups[0]['lr']
+        if train_disc:
+            log_dict['train/lr_disc'] = opt_disc.param_groups[0]['lr']
+
+        self.log_dict(
+            log_dict,
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=False,
+            batch_size=images.shape[0],
+        )
+
+        return gen_loss
+
+    def _validation_step_finetune(self, batch):
+        images = self.get_input(batch, self.image_key)
+        wvs = batch['wvs']
+        recon, _ = self.forward(images, wvs)
+
+        # Compute loss (generator branch only)
+        val_loss, log_dict = self.loss_fn(
+            inputs=images,
+            wvs=wvs,
+            reconstructions=recon,
+            optimizer_idx=0,
+            global_step=self.global_step,
+            last_layer=None,
+            split='val',
+        )
+
+        self.log_dict(
+            log_dict,
+            prog_bar=True,
+            logger=True,
+            on_step=False,
+            on_epoch=True,
+            batch_size=images.shape[0],
+        )
+
+        return val_loss
+
+    # =========================================================
+    #  UTILITIES & LOGGING
+    # =========================================================
+
+    def get_last_layer(self) -> torch.Tensor:
+        # Handles generic output vs dynamic wrapper output
+        return self.decoder.conv_out.weight
+
+    def get_input(self, batch, k):
+        return batch[k]
+
+    def to_rgb(self, x: torch.Tensor) -> torch.Tensor:
+        # Converts segmentation/multispectral to RGB via random projection for viz
+        if not hasattr(self, 'colorize'):
+            self.register_buffer('colorize', torch.randn(3, x.shape[1], 1, 1).to(x))
+        x = F.conv2d(x, weight=self.colorize)
+        return 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
+
+    @torch.no_grad()
+    def log_images(
+        self, batch: dict[str, torch.Tensor], only_inputs: bool = False, **kwargs
+    ) -> dict[str, torch.Tensor]:
+        log = dict()
+        x = self.get_input(batch, self.image_key).to(self.device)
+        wvs = batch['wvs'][0].to(self.device)
+
+        log['inputs'] = x[:, :3] if x.shape[1] > 3 else x
+
+        if not only_inputs:
+            xrec, posterior = self(x, wvs)
+            log['reconstructions'] = xrec[:, :3] if xrec.shape[1] > 3 else xrec
+
+            # For sampling visualization, we mimic the forward pass logic:
+            # Sample -> Shuffle -> Normalize -> Decode
+            z_sample = posterior.sample()
+            z_shuffled = rearrange(
+                z_sample,
+                '... c (i pi) (j pj) -> ... (c pi pj) i j',
+                pi=self.ps[0],
+                pj=self.ps[1],
+            )
+            z_norm = self.normalize_latent(z_shuffled)
+
+            log['samples'] = self.decode(z_norm, wvs)
+
+        return log

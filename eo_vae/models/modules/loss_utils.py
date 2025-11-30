@@ -1,289 +1,175 @@
-# https://github.com/CompVis/taming-transformers/blob/3ba01b241669f5ade541ce990f7650a3b8f65318/taming/modules/losses/lpips.py#L11
-# Copyright (c) 2020 Patrick Esser and Robin Rombach and Björn Ommer
-# MIT License
-# Adapted from above to work with DOFA model
-
-from functools import partial
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-import torch.nn as nn
-from torch import Tensor
-from torchvision import models
-from collections import namedtuple
-from .dynamic_conv import DynamicConv
 
-
-class LPIPS(nn.Module):
-    """Learned Perceptual Image Patch Similarity metric with variable network architecture."""
-
-    def __init__(
-        self,
-        net: nn.Module,
-        scaling_layer: nn.Module | None = None,
-        use_dropout: bool = True,
-    ) -> None:
-        """Initialize LPIPS model.
-
-        Args:
-            net: Pretrained network for LPIPS
-            scaling_layer: Scaling layer for input images, necessary for some classic networks like VGG
-            use_dropout: Whether to use dropout in network
-        """
-        super().__init__()
-        self.scaling_layer = scaling_layer
-        self.net = net
-
-        self.chns = [768] * 12  # DOFA has 12 output layers
-
-        # generate NetLinLayers dynamically according to self.chns
-        for i, chn in enumerate(self.chns):
-            setattr(self, f'lin{i}', NetLinLayer(chn, use_dropout=use_dropout))
-
-        for param in self.parameters():
-            param.requires_grad = False
-
-    def forward(self, input: Tensor, wvs: Tensor, target: Tensor) -> Tensor:
-        """Calculate perceptual distance between images.
-
-        Args:
-            input: Input images [B, C, H, W]
-            wavelengths: Wavelengths of input images
-            target: Target images [B, C, H, W]
-
-        Returns:
-            Perceptual distance value
-        """
-        if self.scaling_layer is not None:
-            in0_input, in1_input = (
-                self.scaling_layer(input),
-                self.scaling_layer(target),
-            )
-        else:
-            in0_input, in1_input = (input, target)
-
-        outs0, outs1 = self.net(in0_input, wvs), self.net(in1_input, wvs)
-        feats0, feats1, diffs = {}, {}, {}
-        # lins = [self.lin0, self.lin1, self.lin2, self.lin3, self.lin4]
-        lins = [getattr(self, f'lin{i}') for i in range(len(self.chns))]
-
-        for kk in range(len(self.chns)):
-            feats0[kk], feats1[kk] = (
-                normalize_tensor(outs0[kk]),
-                normalize_tensor(outs1[kk]),
-            )
-            diffs[kk] = (feats0[kk] - feats1[kk]) ** 2
-
-        res = [
-            spatial_average(lins[kk].model(diffs[kk]), keepdim=True)
-            for kk in range(len(self.chns))
-        ]
-        val = res[0]
-        for l in range(1, len(self.chns)):
-            val += res[l]
-        return val
-
-
-class NetLinLayer(nn.Module):
-    """A single linear layer which does a 1x1 conv"""
-
-    def __init__(self, chn_in: int, chn_out: int = 1, use_dropout: bool = False):
-        """Initialize single 1x1 conv layer.
-
-        Args:
-            chn_in: Number of input channels
-            chn_out: Number of output channels
-            use_dropout: Whether to use dropout
-        """
-        super(NetLinLayer, self).__init__()
-        layers = [nn.Dropout()] if (use_dropout) else []
-        layers += [nn.Conv2d(chn_in, chn_out, 1, stride=1, padding=0, bias=False)]
-        self.model = nn.Sequential(*layers)
-
-
-def normalize_tensor(x: Tensor, eps: float = 1e-10):
-    """Normalize tensor by its L2 norm.
-
-    Args:
-        x: Input tensor
-        eps: Epsilon value for numerical stability
-
-    Returns:
-        Normalized tensor
-    """
+def normalize_tensor(x: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    """Normalize tensor by its L2 norm."""
     norm_factor = torch.sqrt(torch.sum(x**2, dim=1, keepdim=True))
     return x / (norm_factor + eps)
 
 
-def spatial_average(x: Tensor, keepdim: bool = True):
-    """Calculate spatial average of tensor.
-
-    Args:
-        x: Input tensor
-        keepdim: Whether to keep dimensions
-
-    Returns:
-        Spatial average tensor
-    """
-    return x.mean([2, 3], keepdim=keepdim)
-
-
-def adopt_weight(
-    weight: float, global_step: int, threshold: int = 0, value: float = 0.0
-) -> float:
-    """Adopt weight value based on global step.
-
-    Args:
-        weight: Original weight value
-        global_step: Current training step
-        threshold: Step threshold for weight adoption
-        value: Value to use before threshold
-
-    Returns:
-        Adopted weight value
-    """
-    if global_step < threshold:
-        weight = value
-    return weight
-
-
-def hinge_d_loss(logits_real: Tensor, logits_fake: Tensor) -> Tensor:
-    """Calculate hinge loss for discriminator.
-
-    Args:
-        logits_real: Discriminator predictions on real data
-        logits_fake: Discriminator predictions on fake data
-
-    Returns:
-        Hinge loss value
-    """
+def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.Tensor:
     loss_real = torch.mean(F.relu(1.0 - logits_real))
     loss_fake = torch.mean(F.relu(1.0 + logits_fake))
-    d_loss = 0.5 * (loss_real + loss_fake)
-    return d_loss
+    return 0.5 * (loss_real + loss_fake)
 
 
-def vanilla_d_loss(logits_real: Tensor, logits_fake: Tensor) -> Tensor:
-    """Calculate vanilla GAN loss for discriminator.
-
-    Args:
-        logits_real: Discriminator predictions on real data
-        logits_fake: Discriminator predictions on fake data
-
-    Returns:
-        Vanilla GAN loss value
-    """
+def vanilla_d_loss(
+    logits_real: torch.Tensor, logits_fake: torch.Tensor
+) -> torch.Tensor:
     d_loss = 0.5 * (
-        torch.mean(torch.nn.functional.softplus(-logits_real))
-        + torch.mean(torch.nn.functional.softplus(logits_fake))
+        torch.mean(F.softplus(-logits_real)) + torch.mean(F.softplus(logits_fake))
     )
     return d_loss
 
 
-# https://github.com/CompVis/taming-transformers/blob/master/taming/modules/discriminator/model.py
-
-# GAN discriminator
-
-
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find('BatchNorm') != -1:
-        nn.init.normal_(m.weight.data, 1.0, 0.02)
-        nn.init.constant_(m.bias.data, 0)
+def vanilla_g_loss(logits_fake: torch.Tensor) -> torch.Tensor:
+    return torch.mean(F.softplus(-logits_fake))
 
 
-# TODO, adapt this with DOFA input layer?
+class NetLinLayer(nn.Module):
+    """A single linear layer for computing weighted feature distances."""
+
+    def __init__(self, chn_in: int, chn_out: int = 1, use_dropout: bool = False):
+        super().__init__()
+        layers = [nn.Dropout()] if use_dropout else []
+
+        # 1. Create layer
+        conv = nn.Conv1d(chn_in, chn_out, 1, stride=1, padding=0, bias=False)
+
+        # 2. CRITICAL FIX: Initialize weights to positive values
+        # Since we don't have perceptual labels, we treat all features as equally
+        # important initially.
+        nn.init.constant_(conv.weight, 1.0 / chn_in)
+
+        layers += [conv]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
 
 
-class NLayerDiscriminator(nn.Module):
-    """Defines a PatchGAN discriminator as in Pix2Pix
-    --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
+class DOFALPIPS(nn.Module):
+    """DOFA-LPIPS: Learned Perceptual Image Patch Similarity using a frozen DOFA backbone.
+    Calculates perceptual distance in the multispectral feature space.
     """
 
-    def __init__(self, input_nc=3, ndf=64, n_layers=3, use_actnorm=False):
-        """Construct a PatchGAN discriminator
-        Parameters:
-            input_nc (int)  -- the number of channels in input images
-            ndf (int)       -- the number of filters in the last conv layer
-            n_layers (int)  -- the number of conv layers in the discriminator
-            norm_layer      -- normalization layer
-        """
-        super(NLayerDiscriminator, self).__init__()
-        if not use_actnorm:
-            norm_layer = nn.BatchNorm2d
-        else:
-            norm_layer = ActNorm
-        if (
-            type(norm_layer) == partial
-        ):  # no need to use bias as BatchNorm2d has affine parameters
-            use_bias = norm_layer.func != nn.BatchNorm2d
-        else:
-            use_bias = norm_layer != nn.BatchNorm2d
+    def __init__(self, dofa_net: nn.Module, use_dropout: bool = True):
+        super().__init__()
+        self.net = dofa_net
 
-        kw = 4
-        padw = 1
-        sequence = [
-            nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
-            nn.LeakyReLU(0.2, True),
-        ]
-        nf_mult = 1
-        nf_mult_prev = 1
-        for n in range(1, n_layers):  # gradually increase the number of filters
-            nf_mult_prev = nf_mult
-            nf_mult = min(2**n, 8)
-            sequence += [
-                nn.Conv2d(
-                    ndf * nf_mult_prev,
-                    ndf * nf_mult,
-                    kernel_size=kw,
-                    stride=2,
-                    padding=padw,
-                    bias=use_bias,
-                ),
-                norm_layer(ndf * nf_mult),
-                nn.LeakyReLU(0.2, True),
+        # Freeze DOFA backbone
+        for param in self.net.parameters():
+            param.requires_grad = False
+        self.net.eval()
+
+        # Auto-detect dimensions from the pretrained model
+        self.embed_dim = getattr(dofa_net, 'embed_dim', 768)
+        # Using 4 layers (standard for Swin/ViT hierarchical features) or depth
+        self.num_layers = 4
+
+        # Learnable 1x1 convs to weight the differences in feature channels
+        self.lin_layers = nn.ModuleList(
+            [
+                NetLinLayer(self.embed_dim, use_dropout=use_dropout)
+                for _ in range(self.num_layers)
             ]
-
-        nf_mult_prev = nf_mult
-        nf_mult = min(2**n_layers, 8)
-        sequence += [
-            nn.Conv2d(
-                ndf * nf_mult_prev,
-                ndf * nf_mult,
-                kernel_size=kw,
-                stride=1,
-                padding=padw,
-                bias=use_bias,
-            ),
-            norm_layer(ndf * nf_mult),
-            nn.LeakyReLU(0.2, True),
-        ]
-
-        sequence += [
-            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
-        ]  # output 1 channel prediction map
-        self.main_net = nn.Sequential(*sequence)
-
-        # add dynamic convolution input layer to process input
-        self.conv_in = DynamicConv(
-            wv_planes=128,
-            inter_dim=128,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            embed_dim=input_nc,
         )
 
-    def forward(self, input: Tensor, wvs: Tensor) -> Tensor:
-        """Standard forward.
+        # RECOMMENDATION: Since we lack ground-truth perceptual data for Hyperspectral,
+        # it is often safer to freeze the linear weights too, effectively making this
+        # a "Multi-Scale Structural Similarity" loss rather than a "Learned" one.
+        # Uncomment the lines below to freeze the weighting:
+        for param in self.lin_layers.parameters():
+            param.requires_grad = False
 
-        Args:
-            input: input tensor
-            wvs: Wavelengths of input tensor
+    def forward(
+        self, input: torch.Tensor, target: torch.Tensor, wvs: torch.Tensor
+    ) -> torch.Tensor:
+        # with torch.no_grad():
+        feats_in = self.net.forward_features(input, wvs)
+        feats_tgt = self.net.forward_features(target, wvs)
 
-        Returns:
-            output tensor
-        """
-        return self.main_net(self.conv_in(input, wvs))
+        val = torch.tensor(0.0, device=input.device)
+
+        for k, (f_in, f_tgt) in enumerate(zip(feats_in, feats_tgt)):
+            if k >= len(self.lin_layers):
+                break
+
+            if f_in.shape[-1] == self.embed_dim:
+                f_in = f_in.transpose(1, 2)
+                f_tgt = f_tgt.transpose(1, 2)
+
+            f_in = normalize_tensor(f_in)
+            f_tgt = normalize_tensor(f_tgt)
+
+            # Squared difference is ALWAYS positive
+            diff = (f_in - f_tgt) ** 2
+
+            # Weighted sum. If lin_layers weights are positive, this result is positive.
+            val += self.lin_layers[k](diff).mean()
+
+        return val
+
+
+class DOFADiscriminator(nn.Module):
+    """DOFA-Discriminator: Uses frozen DOFA features with lightweight trainable heads.
+    Efficiently discriminates multispectral data without projecting to RGB.
+    """
+
+    def __init__(
+        self, dofa_net: nn.Module, hidden_dim: int = 256, norm_type: str = 'bn'
+    ):
+        super().__init__()
+        self.net = dofa_net
+
+        # Freeze backbone
+        for param in self.net.parameters():
+            param.requires_grad = False
+        self.net.eval()
+
+        self.embed_dim = getattr(dofa_net, 'embed_dim', 768)
+
+        # Discriminator Heads (one per feature scale/layer)
+        # Using 4 layers to capture multi-scale artifacts
+        self.num_layers = 4
+        self.heads = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv1d(self.embed_dim, hidden_dim, kernel_size=1),
+                    nn.LeakyReLU(0.2, inplace=True),
+                    nn.Conv1d(hidden_dim, 1, kernel_size=1),
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+
+    def forward(
+        self, fake: torch.Tensor, real: torch.Tensor | None, wvs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        # Extract features [B, N, D]
+        fake_feats = self.net.forward_features(fake, wvs)
+        real_feats = self.net.forward_features(real, wvs) if real is not None else None
+
+        logits_fake = []
+        logits_real = []
+
+        for k, head in enumerate(self.heads):
+            if k >= len(fake_feats):
+                break
+
+            # Process Fake
+            f_feat = fake_feats[k].transpose(1, 2)  # [B, D, N]
+            logits_fake.append(head(f_feat).view(fake.shape[0], -1))
+
+            # Process Real
+            if real is not None:
+                r_feat = real_feats[k].transpose(1, 2)
+                logits_real.append(head(r_feat).view(real.shape[0], -1))
+
+        # Concatenate logits from all scales
+        logits_fake = torch.cat(logits_fake, dim=1)
+        logits_real = torch.cat(logits_real, dim=1) if real is not None else None
+
+        return logits_fake, logits_real

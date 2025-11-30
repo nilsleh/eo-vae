@@ -1,19 +1,14 @@
-from src.models.dynamic_conv import (
-    DynamicConv,
-    get_1d_sincos_pos_embed_from_grid_torch,
-    DynamicConv_decoder,
-)
-import torch.optim as optim
+import os
 
 import torch
-import os
-from omegaconf import OmegaConf
+import torch.optim as optim
 from hydra.utils import instantiate
-
-from src.models import AutoencoderKL
-from src.datasets import get_flair_dataloader
-import pdb
-
+from omegaconf import OmegaConf
+from src.models.dynamic_conv import (
+    DynamicConv,
+    DynamicConv_decoder,
+    get_1d_sincos_pos_embed_from_grid_torch,
+)
 
 # DynamicConv(wv_planes=128, inter_dim=128, kernel_size=3, stride=1, padding=1, embed_dim=128)
 

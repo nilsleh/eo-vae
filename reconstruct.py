@@ -1,10 +1,11 @@
-import os
-import torch
-import torch.nn.functional as F
+import argparse
+
 import matplotlib.pyplot as plt
 import numpy as np
-from omegaconf import OmegaConf
+import torch
+import torch.nn.functional as F
 from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 
 def load_config(config_path: str):
@@ -14,7 +15,7 @@ def load_config(config_path: str):
 
 def create_objects(cfg):
     """Instantiate datamodule and model from the config."""
-    datamodule = instantiate(cfg.datamodule, batch_size=1)
+    datamodule = instantiate(cfg.datamodule, batch_size=8)
     datamodule.setup('fit')
     model = instantiate(cfg.model)
     model.eval()
@@ -22,8 +23,7 @@ def create_objects(cfg):
 
 
 def forward_pass(model, input_tensor: torch.Tensor):
-    """
-    Pass the input through the model to obtain the reconstruction.
+    """Pass the input through the model to obtain the reconstruction.
 
     If the model returns a tuple/list, take the first element.
     """
@@ -65,15 +65,35 @@ def plot_reconstruction(
 
 
 def main():
-    config_path = os.path.join('configs', 'seasonet.yaml')
-    cfg = load_config(config_path)
+    parser = argparse.ArgumentParser(
+        description='Reconstruct images using a trained model.'
+    )
+    parser.add_argument(
+        '--config', type=str, required=True, help='Path to the YAML config file.'
+    )
+    parser.add_argument(
+        '--ckpt', type=str, required=True, help='Path to the model checkpoint file.'
+    )
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
     datamodule, model = create_objects(cfg)
+
+    # Load the checkpoint
+    checkpoint = torch.load(args.ckpt, map_location='cpu')
+    model.load_state_dict(
+        checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+    )
 
     batch = next(iter(datamodule.train_dataloader()))
 
-    input = batch['image']
+    input = batch['image'][2:3, ...]
 
-    input = F.interpolate(input, (256, 256))
+    import pdb
+
+    pdb.set_trace()
+
+    # input = F.interpolate(input, (256, 256))
 
     wvs = torch.tensor([0.665, 0.560, 0.490])
 

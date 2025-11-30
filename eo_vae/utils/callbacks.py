@@ -1,18 +1,15 @@
-import os
-import io
-import torch
 import matplotlib.pyplot as plt
+import torch
 import wandb
 from lightning.pytorch.callbacks import Callback
 
 
 class ImageLogger(Callback):
     def __init__(self, rgb_indices=None, num_images: int = 4):
-        """
-        Args:
-            rgb_indices: List of channel indices to use for RGB plotting.
-                Defaults to [0, 1, 2] if not provided.
-            num_images: Number of images from the batch to log.
+        """Args:
+        rgb_indices: List of channel indices to use for RGB plotting.
+            Defaults to [0, 1, 2] if not provided.
+        num_images: Number of images from the batch to log.
         """
         self.rgb_indices = rgb_indices if rgb_indices is not None else [0, 1, 2]
         self.num_images = num_images
@@ -24,8 +21,7 @@ class ImageLogger(Callback):
         self.log_images(trainer, pl_module, mode='training')
 
     def log_images(self, trainer, pl_module, mode='validation', batch=None):
-        """
-        Performs a forward pass on a batch and logs input and reconstructions.
+        """Performs a forward pass on a batch and logs input and reconstructions.
         If batch is None, the first batch from the respective dataloader is used.
         """
         # Get the batch if not provided.
@@ -62,8 +58,7 @@ class ImageLogger(Callback):
 
     @staticmethod
     def plot_images(inputs: torch.Tensor, recons: torch.Tensor, n: int) -> plt.Figure:
-        """
-        Plots input and reconstruction images side-by-side in a grid.
+        """Plots input and reconstruction images side-by-side in a grid.
 
         Args:
             inputs: Tensor of input images (B, C, H, W)

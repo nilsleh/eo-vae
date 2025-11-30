@@ -8,15 +8,15 @@
 # - added docstrings and type annotations
 # - adopted for anysensor inputs
 
-import torch
 import numpy as np
+import torch
 
 
 # TODO can this be modernized?
 # https://hunterheidenreich.com/posts/modern-variational-autoencoder-in-pytorch/
 # it is also the same as in diffusers
 # https://github.com/huggingface/diffusers/blob/aad69ac2f323734a083d66fa89197bf7d88e5a57/src/diffusers/models/autoencoders/vae.py#L691
-class DiagonalGaussianDistribution(object):
+class DiagonalGaussianDistribution:
     def __init__(self, parameters: torch.Tensor, deterministic: bool = False) -> None:
         """Initialize diagonal Gaussian distribution.
 

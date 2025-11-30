@@ -1,4 +1,5 @@
 from .autoencoder import AutoencoderKL
-from .model import Encoder, Decoder
+from .autoencoder_flux import FluxAutoencoderKL
+from .model import Decoder, Encoder
 
-all = ('AutoencoderKL', 'Encoder', 'Decoder')
+all = ('AutoencoderKL', 'FluxAutoencoderKL', 'Encoder', 'Decoder')

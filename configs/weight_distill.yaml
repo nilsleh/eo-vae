@@ -1,0 +1,65 @@
+
+experiment:
+  experiment_name: "eo-vae-distill"
+  exp_dir: "results/exps/eo-vae/all"
+
+wandb:
+  project: eo-vae
+  entity: nleh
+  mode: online
+
+model:
+  _target_: eo_vae.models.autoencoder_flux.FluxAutoencoderKL
+  loss_fn:
+    _target_: torch.nn.MSELoss
+
+  
+  encoder:
+    _target_: eo_vae.models.Encoder
+    z_channels: 32
+    resolution: 256
+    in_channels: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+    num_res_blocks: 2
+    use_dynamic_ops: True
+
+  decoder:
+    _target_: eo_vae.models.Decoder
+    z_channels: 32
+    resolution: 256
+    out_ch: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+    num_res_blocks: 2
+    use_dynamic_ops: True
+
+  learning_rate: 0.001
+
+datamodule:
+  _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
+  data_path: "/mnt/SSD2/nils/datasets/terramesh"
+  modalities: ["S2L2A"]  # Load both modalities
+  batch_size: 16
+  eval_batch_size: 32
+  num_workers: 4
+  train_collate_mode: "random"  # Randomly select modality per batch
+  val_collate_mode: "S2L2A"     # Always use S2L2A for validation
+  normalize: true
+  target_size: [224, 224]
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 10
+  accelerator: gpu
+  #strategy: ddp
+  strategy: ddp_find_unused_parameters_true
+  devices: [3]
+  #devices: [0,1,2,3]
+  # accumulate_grad_batches: 2
+  #gradient_clip_val: 1.0
+  log_every_n_steps: 20
+  #overfit_batches: 10
+  
+
+flux_chkpt: /mnt/SSD2/nils/eo-vae/checkpoints/ae.safetensors

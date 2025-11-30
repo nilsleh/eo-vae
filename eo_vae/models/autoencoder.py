@@ -9,12 +9,11 @@
 # - manual optimization according to newer lightning version
 
 
-import torch
 import os
-from lightning import LightningModule
+
+import torch
 import torch.nn.functional as F
-from torch import Tensor
-from typing import Any
+from lightning import LightningModule
 from torchvision.datasets.utils import download_url
 
 from .modules.distributions import DiagonalGaussianDistribution
@@ -80,8 +79,7 @@ class AutoencoderKL(LightningModule):
         self.automatic_optimization = False
 
     def init_from_ckpt(self, path, ignore_keys=list()) -> None:
-        """
-        Load model weights from a checkpoint file.
+        """Load model weights from a checkpoint file.
 
         Args:
             path: Path to the checkpoint file containing model weights
@@ -98,7 +96,7 @@ class AutoencoderKL(LightningModule):
         for k in keys:
             for ik in ignore_keys:
                 if k.startswith(ik):
-                    print('Deleting key {} from state_dict.'.format(k))
+                    print(f'Deleting key {k} from state_dict.')
                     del sd[k]
         self.load_state_dict(sd, strict=False)
         print(f'Restored from {path}')
@@ -106,8 +104,7 @@ class AutoencoderKL(LightningModule):
     def encode(
         self, x: torch.Tensor, wvs: torch.Tensor
     ) -> DiagonalGaussianDistribution:
-        """
-        Encode input tensor to latent representation.
+        """Encode input tensor to latent representation.
 
         Args:
             x: Input tensor to encode [B, C, H, W]
@@ -122,8 +119,7 @@ class AutoencoderKL(LightningModule):
         return posterior
 
     def decode(self, z: torch.Tensor, wvs: torch.Tensor) -> torch.Tensor:
-        """
-        Decode latent representation to image space.
+        """Decode latent representation to image space.
 
         Args:
             z: Latent representation to decode [B, D, H, W]
@@ -138,8 +134,7 @@ class AutoencoderKL(LightningModule):
     def forward(
         self, input: torch.Tensor, wvs: torch.Tensor, sample_posterior: bool = True
     ) -> tuple[torch.Tensor, DiagonalGaussianDistribution]:
-        """
-        Forward pass through the autoencoder.
+        """Forward pass through the autoencoder.
 
         Args:
             input: Input tensor [B, C, H, W]
@@ -159,8 +154,7 @@ class AutoencoderKL(LightningModule):
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        """
-        Training step for autoencoder.
+        """Training step for autoencoder.
 
         Args:
             batch: Input batch dictionary
@@ -240,8 +234,7 @@ class AutoencoderKL(LightningModule):
     def validation_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> dict[str, torch.Tensor]:
-        """
-        Validation step for autoencoder.
+        """Validation step for autoencoder.
 
         Args:
             batch: Input batch dictionary
@@ -281,8 +274,7 @@ class AutoencoderKL(LightningModule):
         return self.log_dict
 
     def configure_optimizers(self) -> tuple[list[torch.optim.Optimizer], list]:
-        """
-        Configure optimizers for autoencoder and discriminator.
+        """Configure optimizers for autoencoder and discriminator.
 
         Returns:
             Tuple of (list of optimizers, list of schedulers)
@@ -304,8 +296,7 @@ class AutoencoderKL(LightningModule):
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self) -> torch.Tensor:
-        """
-        Get weights of the last decoder layer.
+        """Get weights of the last decoder layer.
 
         Returns:
             Weight tensor of final convolution layer
@@ -316,8 +307,7 @@ class AutoencoderKL(LightningModule):
     def log_images(
         self, batch: dict[str, torch.Tensor], only_inputs: bool = False, **kwargs
     ) -> dict[str, torch.Tensor]:
-        """
-        Generate images for logging during training.
+        """Generate images for logging during training.
 
         Args:
             batch: Input batch dictionary
@@ -344,8 +334,7 @@ class AutoencoderKL(LightningModule):
         return log
 
     def to_rgb(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Convert segmentation masks to RGB images.
+        """Convert segmentation masks to RGB images.
 
         Args:
             x: Input tensor [B, C, H, W]

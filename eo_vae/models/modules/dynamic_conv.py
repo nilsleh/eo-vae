@@ -1,16 +1,37 @@
-import numpy as np
 import torch
 import torch.nn as nn
-from torch import Tensor
 import torch.nn.functional as F
 import torch.nn.init as init
-from einops import rearrange
 from torch import Tensor
-
-import pdb
 
 random_seed = 1234
 torch.manual_seed(random_seed)
+
+
+waves_list = {
+    'COASTAL_AEROSOL': 0.44,
+    'BLUE': 0.49,
+    'GREEN': 0.56,
+    'RED': 0.665,
+    'RED_EDGE_1': 0.705,
+    'RED_EDGE_2': 0.74,
+    'RED_EDGE_3': 0.783,
+    'NIR_BROAD': 0.832,
+    'NIR_NARROW': 0.864,
+    'WATER_VAPOR': 0.945,
+    'CIRRUS': 1.373,
+    'SWIR_1': 1.61,
+    'SWIR_2': 2.20,
+    'THEMRAL_INFRARED_1': 10.90,
+    'THEMRAL_INFRARED_12': 12.00,
+    'VV': 5.405,
+    'VH': 5.405,
+    'ASC_VV': 5.405,
+    'ASC_VH': 5.405,
+    'DSC_VV': 5.405,
+    'DSC_VH': 5.405,
+    'VV-VH': 5.405,
+}
 
 
 def get_1d_sincos_pos_embed_from_grid_torch(embed_dim: int, pos: Tensor) -> Tensor:
@@ -289,6 +310,49 @@ class DynamicConv(nn.Module):
         self.weight_generator.apply(self.weight_init)
         self.fclayer.apply(self.weight_init)
 
+    def get_distillation_weight(self, wvs_microns: Tensor):
+        # 1. Positional Embedding
+        waves = get_1d_sincos_pos_embed_from_grid_torch(
+            self.wv_planes, wvs_microns * 1000
+        )
+        waves = self.fclayer(waves)
+
+        # 2. Generate Raw Parameters
+        weight, bias = self._get_weights(waves)
+
+        # 3. Process Weights (Same as before)
+        inplanes = wvs_microns.size(0)
+        dyn_weight = weight.view(
+            inplanes, self.kernel_size, self.kernel_size, self.embed_dim
+        )
+        dyn_weight = dyn_weight.permute([3, 0, 1, 2])
+
+        # 4. Process Bias (Encoder)
+        # In forward(), bias is view([embed_dim]).
+        # But here, we are generating it dynamically?
+        # Actually, usually HyperNetworks generate bias per output channel.
+        # If your _get_weights returns a bias of shape [1, Embed_Dim] or similar,
+        # we need to make sure it matches the Teacher's [128] shape.
+
+        # NOTE: In your provided code for DynamicConv (Encoder):
+        # bias = bias.view([self.embed_dim]) * self.scaler
+        # This implies the bias is NOT dependent on the input wavelength count 'inplanes'
+        # but fixed to the output dimension (128).
+
+        if bias is not None:
+            # bias shape likely comes out as [1, embed_dim] or [inplanes, embed_dim] depending on implementation
+            # For the encoder, the bias is for the OUTPUT features (128 channels).
+            # We usually take the mean or first element if it generates multiple,
+            # BUT standard DynamicConv often generates 1 bias vector for the whole layer.
+
+            # Checking your forward code: "bias = bias.view([self.embed_dim])"
+            # This suggests _get_weights returns something that fits into [128].
+            dyn_bias = bias.view([self.embed_dim]) * self.scaler
+        else:
+            dyn_bias = None
+
+        return dyn_weight * self.scaler, dyn_bias
+
     def forward(self, img_feat: Tensor, wvs: Tensor) -> Tensor:
         """Apply dynamic convolution.
 
@@ -387,6 +451,34 @@ class DynamicConv_decoder(nn.Module):
         """Initialize base weights and dynamic MLP weights."""
         self.weight_generator.apply(self.weight_init)
         self.fclayer.apply(self.weight_init)
+
+    def get_distillation_weight(self, wvs_microns: Tensor):
+        # 1. Positional Embedding
+        waves = get_1d_sincos_pos_embed_from_grid_torch(
+            self.wv_planes, wvs_microns * 1000
+        )
+        waves = self.fclayer(waves)
+
+        # 2. Generate
+        weight, bias = self._get_weights(waves)
+
+        # 3. Process Weights
+        inplanes = wvs_microns.size(0)
+        dyn_weight = weight.view(
+            inplanes, self.kernel_size, self.kernel_size, self.embed_dim
+        )
+        dyn_weight = dyn_weight.permute([0, 3, 1, 2])
+
+        # 4. Process Bias (Decoder)
+        # In forward(): bias = bias.squeeze() * self.scaler
+        # Here, 'inplanes' is 3 (RGB). We expect the bias to be [3].
+        # The hypernetwork should generate 1 bias value PER wavelength query.
+        if bias is not None:
+            dyn_bias = bias.squeeze() * self.scaler
+        else:
+            dyn_bias = None
+
+        return dyn_weight * self.scaler, dyn_bias
 
     def forward(self, img_feat: Tensor, waves: Tensor) -> Tensor:
         """Apply decoder dynamic convolution.
