@@ -1,0 +1,82 @@
+
+experiment:
+  experiment_name: "eo-vae-ssdd"
+  exp_dir: "results/exps/eo-vae/finetune"
+
+wandb:
+  project: eo-vae-ssdd
+  entity: nleh
+  mode: online
+
+model:
+  _target_: eo_vae.models.ssdd.EOSSDD
+
+  lr: 2e-4
+  final_lr: 2e-5
+  warmup_steps: ${trainer.limit_train_batches}
+  max_steps: "${eval:'${trainer.limit_train_batches} * ${trainer.max_epochs}'}"
+      
+  encoder:
+    _target_: eo_vae.models.Encoder
+    z_channels: 32
+    resolution: 256
+    in_channels: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+    num_res_blocks: 2
+    use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 4
+      wv_planes: 256
+
+  denoiser:
+    _target_: eo_vae.models.ssdd.SSDDFlowModule
+    backbone:
+      _target_: eo_vae.models.modules.uvit.UViTDecoder
+      in_channels: 1
+      z_dim: 64
+      channels: 96
+      mid_nlayers: 12
+      ch_mult:
+        - 1
+        - 2
+        - 3
+        - 3
+    schedule:
+      _target_: azula.noise.RectifiedSchedule
+  sampler:
+    _target_: azula.sample.EulerSampler
+    _partial_: true
+  
+
+datamodule:
+  _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
+  data_path: "/mnt/SSD2/nils/datasets/terramesh"
+  modalities: ["S2RGB", "S2L2A"]  # Load modalities
+  batch_size: 8
+  eval_batch_size: 16
+  num_workers: 2
+  train_collate_mode: "random"  # Randomly select modality per batch
+  val_collate_mode: "S2RGB"     # Always use S2L2A for validation
+  normalize: true
+  target_size: [256, 256]
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 25
+  accelerator: gpu
+  precision: 16-mixed
+  #strategy: ddp
+  # strategy: ddp_find_unused_parameters_true
+  limit_val_batches: 100
+  limit_train_batches: 2000 # choose 1000 iterable dataset batches to have control over params
+  devices: [7]
+  #devices: [0,1,2,3]
+  # accumulate_grad_batches: 2
+  gradient_clip_val: 1.0
+  log_every_n_steps: 100
+  # detect_anomaly: true
+  #overfit_batches: 10
+  
+
+flux_chkpt: /mnt/SSD2/nils/eo-vae/checkpoints/ae.safetensors

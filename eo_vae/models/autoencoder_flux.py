@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from lightning import LightningModule
 from safetensors import safe_open
+from torch import Tensor
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -53,13 +54,18 @@ def get_cosine_schedule_with_warmup(
 
 
 class FluxAutoencoderKL(LightningModule):
+    valid_modes = ['distill', 'finetune', 'flow-refine']
+
     def __init__(
         self,
         encoder: torch.nn.Module,
         decoder: torch.nn.Module,
         loss_fn: torch.nn.Module,
+        denoiser: torch.nn.Module | None = None,
+        # schedule: torch.nn.Module | None = None,
+        sampler: torch.nn.Module | None = None,
         ckpt_path: str | None = None,
-        training_mode: str = 'finetune',  # 'distill' or 'finetune'
+        training_mode: str = 'finetune',  # 'distill' or 'finetune', or 'flow-refine'
         ignore_keys: list[str] = [],
         image_key: str = 'image',
         freeze_body: bool = True,
@@ -82,6 +88,21 @@ class FluxAutoencoderKL(LightningModule):
         self.clip_grad = clip_grad
 
         self.automatic_optimization = False
+
+        assert training_mode in self.valid_modes, (
+            f'Invalid training mode: {training_mode}, must be one of {self.valid_modes}'
+        )
+
+        # for flow refinement denoiser and scheduler are required
+        if self.training_mode == 'flow-refine':
+            assert denoiser is not None, (
+                'Denoiser model must be provided for flow-refine mode.'
+            )
+            # assert schedule is not None, "Schedule model must be provided for flow-refine mode."
+            assert sampler is not None, 'Sampler must be provided for flow-refine mode.'
+            self.refiner = denoiser
+            # self.schedule = schedule
+            self.sampler = sampler
 
         # --- FLUX Specific Latent Stats ---
         self.ps = [2, 2]
@@ -262,6 +283,11 @@ class FluxAutoencoderKL(LightningModule):
             opt = torch.optim.Adam(params, lr=self.base_lr)
             return opt
 
+        elif self.training_mode == 'flow-refine':
+            # Only optimize the refiner
+            opt = torch.optim.AdamW(self.refiner.parameters(), lr=1e-4)
+            return opt
+
         # MODE B: FINETUNING (Phase 2 & 3)
         else:
             # Smart Filter: Only pass parameters that require gradients
@@ -271,7 +297,7 @@ class FluxAutoencoderKL(LightningModule):
                 p for p in self.decoder.parameters() if p.requires_grad
             ]
 
-            opt_ae = torch.optim.Adam(ae_params, lr=self.base_lr, betas=(0.5, 0.9))
+            opt_ae = torch.optim.Adam(ae_params, lr=self.base_lr)
 
             optimizers = [opt_ae]
             scheduler_list = []
@@ -279,9 +305,7 @@ class FluxAutoencoderKL(LightningModule):
             # Check if loss_fn has discriminator
             if hasattr(self.loss_fn, 'discriminator'):
                 disc_params = self.loss_fn.discriminator.parameters()
-                opt_disc = torch.optim.Adam(
-                    disc_params, lr=self.base_lr, betas=(0.5, 0.9)
-                )
+                opt_disc = torch.optim.Adam(disc_params, lr=self.base_lr)
                 optimizers.append(opt_disc)
 
             # Build schedulers
@@ -338,7 +362,11 @@ class FluxAutoencoderKL(LightningModule):
         return self.decoder(z, wvs)
 
     def forward(
-        self, input: torch.Tensor, wvs: torch.Tensor, sample_posterior: bool = True
+        self,
+        input: torch.Tensor,
+        wvs: torch.Tensor,
+        sample_posterior: bool = True,
+        use_refiner: bool = False,
     ):
         posterior = self.encode(input, wvs)
         z = posterior.sample() if sample_posterior else posterior.mode()
@@ -350,6 +378,10 @@ class FluxAutoencoderKL(LightningModule):
         z_normalized = self.normalize_latent(z_shuffled)
 
         dec = self.decode(z_normalized, wvs)
+
+        if use_refiner:
+            # Pass through flow refiner
+            dec = self.refine(dec, wvs=wvs)
         return dec, posterior
 
     def normalize_latent(self, z):
@@ -372,11 +404,15 @@ class FluxAutoencoderKL(LightningModule):
     def training_step(self, batch, batch_idx):
         if self.training_mode == 'distill':
             return self._training_step_distill(batch)
+        elif self.training_mode == 'flow-refine':
+            return self._training_step_flow_refinement(batch)
         return self._training_step_finetune(batch)
 
     def validation_step(self, batch, batch_idx):
         if self.training_mode == 'distill':
             return self._validation_step_distill(batch)
+        elif self.training_mode == 'flow-refine':
+            return self._validation_step_flow_refinement(batch)
         return self._validation_step_finetune(batch)
 
     # =========================================================
@@ -454,7 +490,7 @@ class FluxAutoencoderKL(LightningModule):
         # Determine if discriminator should be trained
         train_disc = (
             opt_disc is not None
-            and self.global_step >= self.loss_fn.disc_update_start_step
+            and self.global_step >= self.loss_fn.disc_start
             and self.loss_fn.disc_weight > 0.0
         )
 
@@ -505,7 +541,8 @@ class FluxAutoencoderKL(LightningModule):
                 opt_disc.zero_grad()
 
                 # Re-compute reconstruction (detached)
-                recon_detached, _ = self.forward(images, wvs)
+                # recon_detached, _ = self.forward(images, wvs)
+                recon_detached = recon.detach()
 
                 # Compute discriminator loss
                 disc_loss, log_dict_disc = self.loss_fn(
@@ -514,6 +551,7 @@ class FluxAutoencoderKL(LightningModule):
                     reconstructions=recon_detached,
                     optimizer_idx=1,
                     global_step=self.global_step,
+                    last_layer=None,
                     split='train',
                 )
 
@@ -572,6 +610,73 @@ class FluxAutoencoderKL(LightningModule):
         return val_loss
 
     # =========================================================
+    #  STAGE 3
+    # =========================================================
+
+    def _training_step_flow_refinement(self, batch):
+        opt = self.optimizers()
+        opt.zero_grad()
+
+        x_target = self.get_input(batch, self.image_key)  # Clean 'x'
+        wvs = batch['wvs']
+
+        # Get Source 'z' (Reconstruction) from frozen VAE
+        with torch.no_grad():
+            x_recon, _ = self.forward(x_target, wvs)
+            x_recon = x_recon.detach()
+
+        # Sample time t uniformly [0, 1]
+        t = torch.rand(x_target.shape[0], device=self.device)
+
+        # Compute JiT loss using Azula components
+        loss = self.refiner.loss(
+            x=x_target,
+            z=x_recon,
+            t=t,
+            wvs=wvs,  # Passed as kwargs to backbone
+        )
+
+        self.manual_backward(loss)
+        opt.step()
+
+        self.log('train/loss_rec', loss, prog_bar=True)
+        return loss
+
+    def _validation_step_flow_refinement(self, batch):
+        images = self.get_input(batch, self.image_key)  # Ground Truth
+        wvs = batch['wvs']
+
+        # 1. Base VAE Reconstruction (Frozen Path)
+        with torch.no_grad():
+            x_recon, _ = self.forward(images, wvs)
+            x_recon = x_recon.detach()
+
+        # 2. Refined Reconstruction (Sampler Path)
+        # This executes the actual flow matching inference
+        x_refined = self.refine(x_recon, wvs, steps=20)
+
+        # 3. Compute Metrics
+        base_mse = F.mse_loss(x_recon, images)
+        refined_mse = F.mse_loss(x_refined, images)
+
+        self.log_dict(
+            {
+                'val/loss_rec': refined_mse,
+                'val/refinement_gain': base_mse - refined_mse,
+            },
+            prog_bar=True,
+            on_epoch=True,
+        )
+
+        return refined_mse
+
+    @torch.no_grad()
+    def refine(self, x_recon: Tensor, wvs: Tensor, steps: int = 25) -> Tensor:
+        """Runs the EulerSampler from t=0 (recon) to t=1 (target)."""
+        sampler = self.sampler(denoiser=self.refiner, steps=steps)
+        return sampler(x=x_recon, wvs=wvs)
+
+    # =========================================================
     #  UTILITIES & LOGGING
     # =========================================================
 
@@ -581,39 +686,3 @@ class FluxAutoencoderKL(LightningModule):
 
     def get_input(self, batch, k):
         return batch[k]
-
-    def to_rgb(self, x: torch.Tensor) -> torch.Tensor:
-        # Converts segmentation/multispectral to RGB via random projection for viz
-        if not hasattr(self, 'colorize'):
-            self.register_buffer('colorize', torch.randn(3, x.shape[1], 1, 1).to(x))
-        x = F.conv2d(x, weight=self.colorize)
-        return 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
-
-    @torch.no_grad()
-    def log_images(
-        self, batch: dict[str, torch.Tensor], only_inputs: bool = False, **kwargs
-    ) -> dict[str, torch.Tensor]:
-        log = dict()
-        x = self.get_input(batch, self.image_key).to(self.device)
-        wvs = batch['wvs'][0].to(self.device)
-
-        log['inputs'] = x[:, :3] if x.shape[1] > 3 else x
-
-        if not only_inputs:
-            xrec, posterior = self(x, wvs)
-            log['reconstructions'] = xrec[:, :3] if xrec.shape[1] > 3 else xrec
-
-            # For sampling visualization, we mimic the forward pass logic:
-            # Sample -> Shuffle -> Normalize -> Decode
-            z_sample = posterior.sample()
-            z_shuffled = rearrange(
-                z_sample,
-                '... c (i pi) (j pj) -> ... (c pi pj) i j',
-                pi=self.ps[0],
-                pj=self.ps[1],
-            )
-            z_norm = self.normalize_latent(z_shuffled)
-
-            log['samples'] = self.decode(z_norm, wvs)
-
-        return log

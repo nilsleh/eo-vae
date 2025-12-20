@@ -67,6 +67,14 @@ class EOGenerativeLoss(nn.Module):
         d_weight = torch.norm(recon_grads) / (torch.norm(gan_grads) + 1e-6)
         return torch.clamp(d_weight, 0.0, self.max_d_weight).detach()
 
+    def robust_normalize(self, x: torch.Tensor, clip_val: float = 3.0) -> torch.Tensor:
+        """Linearly maps Z-scored data from roughly [-clip_val, clip_val] to [-1, 1].
+        Preserves linearity (texture details) better than Tanh for the Discriminator.
+        """
+        # Clamp outliers to prevent gradient explosions in the discriminator
+        x_clamped = torch.clamp(x, -clip_val, clip_val)
+        return x_clamped / clip_val
+
     def forward(
         self,
         inputs: torch.Tensor,
@@ -107,6 +115,7 @@ class EOGenerativeLoss(nn.Module):
 
             # 4. GAN Loss (Generator side)
             if use_gan:
+                reconstructions = self.robust_normalize(reconstructions)
                 logits_fake, _ = self.discriminator(reconstructions, None, wvs)
                 g_loss = self.gen_loss_fn(logits_fake)
 

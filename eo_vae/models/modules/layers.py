@@ -51,11 +51,12 @@ class Upsample(nn.Module):
 
 
 class ResnetBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, cond_dim: int = None):
         super().__init__()
         self.in_channels = in_channels
         out_channels = in_channels if out_channels is None else out_channels
         self.out_channels = out_channels
+        self.cond_dim = cond_dim
 
         self.norm1 = nn.GroupNorm(
             num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
@@ -63,6 +64,17 @@ class ResnetBlock(nn.Module):
         self.conv1 = nn.Conv2d(
             in_channels, out_channels, kernel_size=3, stride=1, padding=1
         )
+
+        # --- NEW: Optional AdaIN Projection ---
+        if self.cond_dim is not None:
+            # Project embedding to [scale, shift] for out_channels
+            self.emb_proj = nn.Linear(cond_dim, out_channels * 2)
+            # Initialize to identity (scale=1, shift=0)
+            nn.init.zeros_(self.emb_proj.bias)
+            self.emb_proj.weight.data.zero_()
+            # Initialize scale part of bias to 1
+            self.emb_proj.bias.data[:out_channels] = 1.0
+
         self.norm2 = nn.GroupNorm(
             num_groups=32, num_channels=out_channels, eps=1e-6, affine=True
         )
@@ -74,13 +86,25 @@ class ResnetBlock(nn.Module):
                 in_channels, out_channels, kernel_size=1, stride=1, padding=0
             )
 
-    def forward(self, x):
+    def forward(self, x, emb=None):
         h = x
         h = self.norm1(h)
         h = swish(h)
         h = self.conv1(h)
 
-        h = self.norm2(h)
+        # --- NEW: Apply AdaIN if embedding is provided ---
+        if self.cond_dim is not None and emb is not None:
+            # emb: [B, cond_dim] -> [B, 2*out_channels]
+            style = self.emb_proj(emb)
+            # Reshape for broadcasting: [B, 2*C, 1, 1]
+            style = style.unsqueeze(-1).unsqueeze(-1)
+            scale, shift = style.chunk(2, dim=1)
+
+            h = self.norm2(h)
+            h = h * scale + shift  # AdaIN modulation
+        else:
+            h = self.norm2(h)
+
         h = swish(h)
         h = self.conv2(h)
 

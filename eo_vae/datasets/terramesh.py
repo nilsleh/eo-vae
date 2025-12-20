@@ -201,7 +201,6 @@ def build_terramesh_dataset(
             warnings.warn(
                 f'keyword arguments ({kwargs}) are ignored for multiple modalities.'
             )
-
         # Build custom multi-modal dataset
         dataset = build_multimodal_dataset(
             path=path,
@@ -322,6 +321,9 @@ def build_wds_dataset(
         # Setting empty_check to True to avoid errors because of a single shard file in SSL4EOS12 S1GRD val split
         empty_check = False
 
+    import pdb
+
+    pdb.set_trace()
     # Build dataset
     dataset = wds.WebDataset(
         urls,
@@ -564,38 +566,36 @@ def multi_tarfile_samples(src_iter: Iterable[dict]):
             wds.tarfile_samples([{'url': tar_url}]) for tar_url in multi_tar_urls
         ]
 
-        try:
-            # Loop over these iterators in parallel and combine the tar files from different modalities
-            for multi_tar_files in zip(*tar_iters):
-                merged_dict = {}
-                merged_dict['__key__'] = multi_tar_files[0]['__key__']
-                merged_dict['__url__'] = src['url']
+        # try:
+        #     # Loop over these iterators in parallel and combine the tar files from different modalities
+        for multi_tar_files in zip(*tar_iters):
+            merged_dict = {}
+            merged_dict['__key__'] = multi_tar_files[0]['__key__']
+            merged_dict['__url__'] = src['url']
 
-                for modality_name, modality_dict in zip(
-                    modality_names, multi_tar_files
-                ):
-                    _key = modality_dict.pop('__key__')
-                    _url = modality_dict.pop('__url__')
+            for modality_name, modality_dict in zip(modality_names, multi_tar_files):
+                _key = modality_dict.pop('__key__')
+                _url = modality_dict.pop('__url__')
 
-                    if _key != merged_dict['__key__']:
-                        raise ValueError(
-                            f'Divergence detected! Trying to merge keys {_key} of {modality_name} and {merged_dict["__key__"]} of merged_dict with modalities {merged_dict.keys()}.'
-                        )
+                if _key != merged_dict['__key__']:
+                    raise ValueError(
+                        f'Divergence detected! Trying to merge keys {_key} of {modality_name} and {merged_dict["__key__"]} of merged_dict with modalities {merged_dict.keys()}.'
+                    )
 
-                    for k, v in modality_dict.items():
-                        if modality_name is None:
-                            merged_dict[k] = v
-                        else:
-                            merged_dict[f'{modality_name}.{k}'] = v
+                for k, v in modality_dict.items():
+                    if modality_name is None:
+                        merged_dict[k] = v
+                    else:
+                        merged_dict[f'{modality_name}.{k}'] = v
 
-                yield merged_dict
+            yield merged_dict
 
-        except Exception as e:
-            warnings.warn(
-                f'Exception occurred while processing {src["url"]}: {e!r}.'
-                f'Skipping shard'
-            )
-            continue
+        # except Exception as e:
+        #     warnings.warn(
+        #         f'Exception occurred while processing {src["url"]}: {e!r}.'
+        #         f'Skipping shard'
+        #     )
+        #     continue
 
 
 # class Transpose(albumentations.ImageOnlyTransform):

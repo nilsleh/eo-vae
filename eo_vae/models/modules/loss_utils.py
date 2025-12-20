@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .dynamic_conv import DynamicConv
+
 
 def normalize_tensor(x: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
     """Normalize tensor by its L2 norm."""
@@ -81,8 +83,8 @@ class DOFALPIPS(nn.Module):
         # it is often safer to freeze the linear weights too, effectively making this
         # a "Multi-Scale Structural Similarity" loss rather than a "Learned" one.
         # Uncomment the lines below to freeze the weighting:
-        for param in self.lin_layers.parameters():
-            param.requires_grad = False
+        # for param in self.lin_layers.parameters():
+        #     param.requires_grad = False
 
     def forward(
         self, input: torch.Tensor, target: torch.Tensor, wvs: torch.Tensor
@@ -171,5 +173,97 @@ class DOFADiscriminator(nn.Module):
         # Concatenate logits from all scales
         logits_fake = torch.cat(logits_fake, dim=1)
         logits_real = torch.cat(logits_real, dim=1) if real is not None else None
+
+        return logits_fake, logits_real
+
+
+class NLayerDiscriminator(nn.Module):
+    """Defines a PatchGAN discriminator as in Pix2Pix
+    --> see https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py
+    """
+
+    def __init__(self, input_nc=3, ndf=64, n_layers=3, use_actnorm=False):
+        """Construct a PatchGAN discriminator
+        Parameters:
+            input_nc (int)  -- the number of channels in input images
+            ndf (int)       -- the number of filters in the last conv layer
+            n_layers (int)  -- the number of conv layers in the discriminator
+            norm_layer      -- normalization layer
+        """
+        super(NLayerDiscriminator, self).__init__()
+        norm_layer = nn.InstanceNorm2d
+        use_bias = False
+
+        kw = 4
+        padw = 1
+        sequence = [
+            nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
+            nn.LeakyReLU(0.2, True),
+        ]
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):  # gradually increase the number of filters
+            nf_mult_prev = nf_mult
+            nf_mult = min(2**n, 8)
+            sequence += [
+                nn.Conv2d(
+                    ndf * nf_mult_prev,
+                    ndf * nf_mult,
+                    kernel_size=kw,
+                    stride=2,
+                    padding=padw,
+                    bias=use_bias,
+                ),
+                norm_layer(ndf * nf_mult),
+                nn.LeakyReLU(0.2, True),
+            ]
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2**n_layers, 8)
+        sequence += [
+            nn.Conv2d(
+                ndf * nf_mult_prev,
+                ndf * nf_mult,
+                kernel_size=kw,
+                stride=1,
+                padding=padw,
+                bias=use_bias,
+            ),
+            norm_layer(ndf * nf_mult),
+            nn.LeakyReLU(0.2, True),
+        ]
+
+        sequence += [
+            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+        ]  # output 1 channel prediction map
+        self.main_net = nn.Sequential(*sequence)
+
+        # add dynamic convolution input layer to process input
+        self.conv_in = DynamicConv(
+            wv_planes=128,
+            inter_dim=128,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            embed_dim=input_nc,
+        )
+
+    def forward(
+        self, fake: torch.Tensor, real: torch.Tensor | None, wvs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Forward pass matching DinoDisc API.
+
+        Args:
+            fake: Fake/generated images [B, C, H, W]
+            real: Real images [B, C, H, W] (can be None)
+            wvs: Wavelengths [C] or [B, C]
+
+        Returns:
+            Tuple of (logits_fake, logits_real)
+        """
+        logits_fake = self.main_net(self.conv_in(fake, wvs))
+        logits_real = (
+            self.main_net(self.conv_in(real, wvs)) if real is not None else None
+        )
 
         return logits_fake, logits_real

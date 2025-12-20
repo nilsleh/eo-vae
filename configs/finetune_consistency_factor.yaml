@@ -1,6 +1,6 @@
 
 experiment:
-  experiment_name: "eo-vae-consistency"
+  experiment_name: "eo-vae-consistency-factorized"
   exp_dir: "results/exps/eo-vae/finetune"
 
 wandb:
@@ -11,7 +11,7 @@ wandb:
 model:
   _target_: eo_vae.models.autoencoder_flux.FluxAutoencoderKL
   
-  freeze_body: True
+  freeze_body: False
 
   base_lr: 2e-4
   final_lr_sched: 2e-5
@@ -22,19 +22,24 @@ model:
   # Loss configuration
   loss_fn:
     _target_: eo_vae.models.modules.consistency_loss.EOConsistencyLoss
+    rec_loss_type: "char"
     pixel_weight: 1.0
+    msssim_weight: 1.0
+    spatial_weight: 0.0
+    freq_weight: 0.0
     spectral_weight: 0.0
-    spatial_weight: 0.1
-    freq_weight: 0.1
-    feature_weight: 0.5
-    # spectral_start_step: 2000
-    spatial_start_step: 2000
-    freq_start_step: 3000
-    feature_start_step: 4000
-    dofa_net:
-      _target_: eo_vae.models.dofa.dofav2_base_patch14_224
-      model_bands: ["RED", "GREEN", "BLUE"]
-      ckpt_data: /mnt/SSD2/nils/eo-rae/eo_rae/models/dofav2/dofav2_vit_base_e150.pth
+    feature_weight: 0.0
+    msssim_start_step: 2000
+    # freq_start_step: 3000
+    # freq_start_step: 1000   # Delay slightly to let MS-SSIM establish structure first
+    # spectral_start_step: 1000
+    # spatial_start_step: 2000
+    # freq_start_step: 3000
+    # feature_start_step: 4000
+    # dofa_net:
+    #   _target_: eo_vae.models.dofa.dofav2_base_patch14_224
+    #   model_bands: ["RED", "GREEN", "BLUE"]
+    #   ckpt_data: /mnt/SSD2/nils/eo-rae/eo_rae/models/dofav2/dofav2_vit_base_e150.pth
   
   encoder:
     _target_: eo_vae.models.Encoder
@@ -45,6 +50,12 @@ model:
     ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
     num_res_blocks: 2
     use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 4
+      rank_ratio: 2
+      wv_planes: 256
+      generator_type: factorized
+
 
   decoder:
     _target_: eo_vae.models.Decoder
@@ -55,24 +66,31 @@ model:
     ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
     num_res_blocks: 2
     use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 4
+      rank_ratio: 2
+      wv_planes: 256
+      generator_type: factorized
+
 
 
 datamodule:
   _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
   data_path: "/mnt/SSD2/nils/datasets/terramesh"
-  modalities: ["S2RGB"]  # Load both modalities
+  modalities: ["S2L2A", "S2RGB", "S2L1C", "S1RTC"]  # Load modalities
   batch_size: 16
   eval_batch_size: 32
   num_workers: 4
   train_collate_mode: "random"  # Randomly select modality per batch
-  val_collate_mode: "S2RGB"     # Always use S2L2A for validation
+  val_collate_mode: "S2L2A"     # Always use S2L2A for validation
   normalize: true
-  target_size: [224, 224]
+  target_size: [256, 256]
 
 trainer:
   _target_: lightning.Trainer
-  max_epochs: 50
+  max_epochs: 25
   accelerator: gpu
+  precision: 16-mixed
   #strategy: ddp
   # strategy: ddp_find_unused_parameters_true
   limit_val_batches: 100
@@ -82,6 +100,7 @@ trainer:
   # accumulate_grad_batches: 2
   #gradient_clip_val: 1.0
   log_every_n_steps: 100
+  # detect_anomaly: true
   #overfit_batches: 10
   
 

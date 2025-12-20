@@ -1,6 +1,6 @@
 
 experiment:
-  experiment_name: "eo-vae-distill"
+  experiment_name: "eo-vae-distill-2-layers"
   exp_dir: "results/exps/eo-vae/all"
 
 wandb:
@@ -23,6 +23,8 @@ model:
     ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
     num_res_blocks: 2
     use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 2
 
   decoder:
     _target_: eo_vae.models.Decoder
@@ -33,8 +35,9 @@ model:
     ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
     num_res_blocks: 2
     use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 2
 
-  learning_rate: 0.001
 
 datamodule:
   _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
@@ -50,7 +53,7 @@ datamodule:
 
 trainer:
   _target_: lightning.Trainer
-  max_epochs: 10
+  max_epochs: 5
   accelerator: gpu
   #strategy: ddp
   strategy: ddp_find_unused_parameters_true

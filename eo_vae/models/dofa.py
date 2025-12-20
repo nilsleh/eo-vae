@@ -7,7 +7,9 @@ import math
 # from collections.abc import Callable
 from functools import partial
 
+import einops
 import huggingface_hub
+import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -234,7 +236,8 @@ class Dynamic_MLP_OFA(nn.Module):
         self.weight_generator = TransformerWeightGenerator(
             wv_planes, self._num_kernel, embed_dim
         )
-        self.scaler = 0.01
+        # self.scaler = 0.01
+        self.scaler = 0.1
 
         self.fclayer = FCResLayer(wv_planes)
 
@@ -480,6 +483,120 @@ class DOFAViT(nn.Module):
         return x
 
 
+class DOFAViT_v3(nn.Module):
+    """Masked Autoencoder with VisionTransformer backbone"""
+
+    def __init__(
+        self,
+        img_size=224,
+        patch_size=16,
+        drop_rate=0.0,
+        out_indices=None,
+        drop_path_rate=0.0,
+        embed_dim=1024,
+        depth=24,
+        num_heads=16,
+        wv_planes=128,
+        num_classes=45,
+        global_pool=True,
+        mlp_ratio=4.0,
+        norm_layer=nn.LayerNorm,
+    ):
+        super().__init__()
+
+        self.wv_planes = wv_planes
+        self.out_indices = out_indices
+        self.global_pool = True
+        if self.global_pool:
+            norm_layer = norm_layer
+            embed_dim = embed_dim
+            self.fc_norm = norm_layer(embed_dim)
+
+        # --------------------------------------------------------------------------
+        # MAE encoder specifics
+        self.img_size = img_size
+        if isinstance(img_size, tuple):
+            self.img_size = self.img_size[0]
+
+        self.num_patches = (self.img_size // patch_size) ** 2
+        self.patch_embed = Dynamic_MLP_OFA(
+            wv_planes=128, inter_dim=128, kernel_size=16, embed_dim=embed_dim
+        )
+        self.model = timm.create_model(
+            'vit_large_patch16_dinov3.lvd1689m', pretrained=False
+        )
+
+        self.out_indices = out_indices
+        self.dynamic_img_size = True
+        self.waves = None
+        self.norm = norm_layer(embed_dim)
+        self.embed_dim = embed_dim
+        self.patch_size = patch_size
+        self.out_indices = out_indices
+        self.head_drop = nn.Dropout(drop_rate)
+        self.head = (
+            nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        )
+
+    def forward_features(self, x, waves):
+        with torch.autocast('cuda', enabled=False):
+            # waves = torch.tensor(wave_list, device=x.device).float()
+            x = x.float()
+            waves = waves.float()
+            x, _ = self.patch_embed(x, waves)
+
+        x = einops.rearrange(x, 'b c h w -> b h w c', h=14, w=14)
+        x, rot_pos_embed = self.model._pos_embed(x)
+
+        x = self.model.norm_pre(x)
+        for i, blk in enumerate(self.model.blocks[:-1]):
+            x = blk(x, rope=rot_pos_embed)
+            if i == len(self.model.blocks) - 2:
+                outx = x
+                # remove class tokens for feature RAE output
+                outx = outx[:, self.model.num_prefix_tokens :, :]
+
+        return outx
+
+        # import pdb
+        # pdb.set_trace()
+        # if self.global_pool:
+        #     x = self.model.norm(outx)
+        #     x = x[:, self.model.num_prefix_tokens:, :].mean(dim=1)  # global pool without cls token
+        #     outcome = self.fc_norm(x)
+        # else:
+        #     x = self.model.norm(x)
+        #     outcome = x[:, 0]
+        # return outcome
+
+    def forward_head(self, x, pre_logits=False):
+        x = self.model.head_drop(x)
+        return x if pre_logits else self.head(x)
+
+    def forward(self, x, wvs: torch.Tensor):
+        x = self.forward_features(x, wvs)
+        return x
+
+    def forward_lpips(self, x, waves: torch.Tensor):
+        with torch.autocast('cuda', enabled=False):
+            # waves = torch.tensor(wave_list, device=x.device).float()
+            x = x.float()
+            waves = waves.float()
+            x, _ = self.patch_embed(x, waves)
+
+        x = einops.rearrange(x, 'b c h w -> b h w c', h=14, w=14)
+        x, rot_pos_embed = self.model._pos_embed(x)
+        out_features = []
+        x = self.model.norm_pre(x)
+        for i, blk in enumerate(self.model.blocks[:-1]):
+            x = blk(x, rope=rot_pos_embed)
+
+            if i in self.out_indices:
+                out_features.append(x[:, self.model.num_prefix_tokens :, :])
+
+        return out_features
+
+
 def vit_base_patch14(**kwargs):
     model = DOFAViT(
         out_indices=[4, 6, 10, 11],
@@ -684,6 +801,35 @@ def dofav2_large_patch14_224(
 
     return model
     # return DOFAEncoderWrapper(model, wavelengths, weights, out_indices)
+
+
+def dofav3_large_patch16_224(
+    model_bands,
+    pretrained=False,
+    ckpt_data: str | None = None,
+    weights: Weights | None = None,
+    out_indices: list | None = None,
+    pos_interpolation_mode: str = 'bilinear',
+    **kwargs,
+):
+    """Builder for the DOFA v3 (DINO-based) architecture."""
+    # Force parameters matching the checkpoint structure
+    kwargs['patch_size'] = 16
+    kwargs['embed_dim'] = 1024
+    kwargs['depth'] = 24
+    kwargs['num_heads'] = 16
+
+    model = DOFAViT_v3(out_indices=out_indices, **kwargs)
+
+    input_size = kwargs.get('img_size', 224)
+
+    if pretrained:
+        # Use existing loader but might need tweaks for v3 specific keys
+        model = load_dofa_weights(
+            model, pos_interpolation_mode, ckpt_data, weights, input_size, patch_size=16
+        )
+
+    return model
 
 
 def load_dofa_weights(

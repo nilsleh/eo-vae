@@ -3,11 +3,186 @@ import torch.fft
 import torch.nn as nn
 import torch.nn.functional as F
 from focal_frequency_loss import FocalFrequencyLoss as FFL
+from torch.nn.utils import spectral_norm
+from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
 
 
-class SpectralAngleMapperLoss(nn.Module):
-    """Computes the spectral angle between reconstructed and target pixel vectors.
-    This helps keep the 'color' or spectral curve correct, ignoring brightness differences.
+class CharbonnierLoss(nn.Module):
+    """Charbonnier loss (smooth L1-like loss)."""
+
+    def __init__(self, eps=1e-3):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, pred, target):
+        diff = pred - target
+        return torch.mean(torch.sqrt(diff**2 + self.eps**2))
+
+
+class SSIMLoss(nn.Module):
+    def __init__(self, channels=12):
+        super().__init__()
+        # MS-SSIM calculates similarity at multiple resolutions.
+        # It ensures the "Vibe" (Low freq) and "Details" (High freq) both match.
+        self.msssim = MultiScaleStructuralSimilarityIndexMeasure(
+            data_range=6.0,  # Approx range of Z-score data (-3 to 3)
+            kernel_size=5,
+            betas=(0.0448, 0.2856, 0.3001, 0.2363, 0.1333),  # Standard weights
+        )
+
+    def forward(self, pred, target):
+        # MS-SSIM returns 1.0 for perfect match. Loss = 1 - score.
+        return 1.0 - self.msssim(pred, target)
+
+
+import torch.nn as nn
+
+
+class DynamicPatchGAN(nn.Module):
+    def __init__(self, input_conv_generator, ndf=128, n_layers=3):
+        """input_conv_generator: Your existing hypernetwork layer that generates
+        weights for variable channels.
+        """
+        super().__init__()
+        self.dynamic_input = input_conv_generator  # Re-use your dynamic conv logic
+
+        # Standard PatchGAN backbone
+        layers = []
+        curr_dim = ndf
+
+        # Initial block (ndf)
+        # FIX: Added spectral_norm for stability with Hinge Loss
+        layers.append(
+            nn.Sequential(
+                spectral_norm(nn.Conv2d(ndf, ndf, kernel_size=4, stride=2, padding=1)),
+                nn.LeakyReLU(0.2, True),
+            )
+        )
+
+        # Intermediate blocks
+        for i in range(1, n_layers):
+            prev_dim = curr_dim
+            curr_dim = min(ndf * (2**i), 512)
+            layers.append(
+                nn.Sequential(
+                    # FIX: Added spectral_norm and switched to InstanceNorm
+                    spectral_norm(
+                        nn.Conv2d(
+                            prev_dim,
+                            curr_dim,
+                            kernel_size=4,
+                            stride=2,
+                            padding=1,
+                            bias=False,
+                        )
+                    ),
+                    nn.InstanceNorm2d(curr_dim),
+                    nn.LeakyReLU(0.2, True),
+                )
+            )
+
+        # Final 1-channel prediction map (the "Patch")
+        # FIX: Added spectral_norm
+        layers.append(
+            spectral_norm(nn.Conv2d(curr_dim, 1, kernel_size=4, stride=1, padding=1))
+        )
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x, wvs):
+        # x: [B, C, H, W], wvs: [B, C]
+        x = self.dynamic_input(x, wvs)  # Map variable C -> ndf
+        return self.model(x)
+
+
+class EOPatchLoss(nn.Module):
+    def __init__(
+        self, discriminator, disc_start=10000, disc_weight=0.5, ssim_weight=0.2
+    ):
+        super().__init__()
+        self.discriminator = discriminator
+        self.disc_start = disc_start
+        self.disc_weight = disc_weight
+        self.ssim_weight = ssim_weight
+        self.ssim = SSIMLoss()
+
+    def forward(
+        self,
+        inputs,
+        wvs,
+        reconstructions,
+        optimizer_idx,
+        global_step,
+        last_layer=None,
+        split='train',
+    ):
+        # 1. GENERATOR BRANCH
+        if optimizer_idx == 0:
+            self.discriminator.eval()  # Freeze disc during gen step
+            # Pixel-wise Accuracy (Radiometric Fidelity)
+            rec_loss = F.l1_loss(reconstructions, inputs)
+
+            # Structural Consistency (Works for any C-channel modality)
+            # SSIM helps reconstruct fine-scale details without ImageNet bias
+            ssim_loss = self.ssim(reconstructions, inputs)
+
+            # Adversarial Loss (Texture & Sharpness)
+            g_loss = torch.tensor(0.0, device=inputs.device, dtype=inputs.dtype)
+            logits_fake_mean = torch.tensor(
+                0.0, device=inputs.device, dtype=inputs.dtype
+            )
+            weight = torch.tensor(0.0, device=inputs.device, dtype=inputs.dtype)
+
+            if global_step >= self.disc_start:
+                logits_fake = self.discriminator(reconstructions, wvs)
+                g_loss = -torch.mean(logits_fake)
+                logits_fake_mean = logits_fake.mean()  # Log this!
+
+                # Adaptive weighting
+                if last_layer is not None:
+                    weight = self.calculate_adaptive_weight(
+                        rec_loss, g_loss, last_layer
+                    )
+                    g_loss = g_loss * weight
+
+            total_loss = (
+                rec_loss + (self.disc_weight * g_loss) + (self.ssim_weight * ssim_loss)
+            )
+
+            return total_loss, {
+                f'{split}/loss_rec': rec_loss,
+                f'{split}/loss_g': g_loss,
+                f'{split}/disc_weight': weight,
+                f'{split}/loss_msssim': ssim_loss,
+                f'{split}/logits_fake_g': logits_fake_mean,
+            }
+
+        # 2. DISCRIMINATOR BRANCH
+        if optimizer_idx == 1:
+            self.discriminator.train()
+            logits_real = self.discriminator(inputs.detach(), wvs)
+            logits_fake = self.discriminator(reconstructions.detach(), wvs)
+
+            d_loss = 0.5 * (
+                torch.mean(F.relu(1.0 - logits_real))
+                + torch.mean(F.relu(1.0 + logits_fake))
+            )
+            return d_loss, {
+                f'{split}/loss_disc': d_loss,
+                f'{split}/logits_real': logits_real.mean(),
+                f'{split}/logits_fake_d': logits_fake.mean(),
+            }
+
+    def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer):
+        # Adaptive weight logic to balance GAN vs Reconstruction
+        nll_grads = torch.autograd.grad(nll_loss, last_layer, retain_graph=True)[0]
+        g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
+        d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-4)
+        return torch.clamp(d_weight, 0.0, 2.0).detach()
+
+
+class SAMLoss(nn.Module):
+    """Optimizes Spectral Angle without using acos().
+    Minimizing (1 - cos(theta)) is numerically stable.
     """
 
     def __init__(self, eps=1e-8):
@@ -15,23 +190,80 @@ class SpectralAngleMapperLoss(nn.Module):
         self.eps = eps
 
     def forward(self, x_rec, x_true):
-        # Manual calculation of norms with epsilon for gradient stability at 0
-        # torch.norm() has undefined gradients at 0, which is common in Z-score normalized data
-        norm_rec = torch.sqrt(torch.sum(x_rec**2, dim=1) + self.eps)
-        norm_true = torch.sqrt(torch.sum(x_true**2, dim=1) + self.eps)
-
-        # Dot product along channels
+        # Dot product along channel dimension
         dot = torch.sum(x_rec * x_true, dim=1)
 
-        # Cosine similarity
-        cos_sim = dot / (norm_rec * norm_true)
+        # Norms
+        norm_rec = torch.norm(x_rec, dim=1)
+        norm_true = torch.norm(x_true, dim=1)
 
-        # Clamp to avoid acos issues
-        cos_sim = torch.clamp(cos_sim, -1 + self.eps, 1 - self.eps)
+        # Cosine Similarity
+        # eps prevents division by zero
+        cos_sim = dot / (norm_rec * norm_true + self.eps)
 
-        # Spectral Angle in radians
-        sam = torch.acos(cos_sim)
-        return torch.mean(sam)
+        # Loss = 1 - CosineSimilarity
+        # Range: [0, 2] (0 = aligned, 1 = orthogonal, 2 = opposite)
+        return (1.0 - cos_sim).mean()
+
+
+class BerHuLoss(nn.Module):
+    """The 'BerHu' Loss.
+    - Small errors (|x| <= c): Penalized linearly (L1). Good for texture.
+    - Large errors (|x| > c): Penalized quadratically (L2). Good for hotspots.
+    """
+
+    def __init__(self, threshold=0.2):
+        super().__init__()
+        self.threshold = threshold
+
+    def forward(self, pred, target):
+        diff = torch.abs(pred - target)
+
+        # Mask for small vs large errors
+        mask = diff <= self.threshold
+
+        # L1 part
+        l1_loss = diff[mask]
+
+        # L2 part (Rewritten to connect smoothly to L1)
+        # (diff^2 + c^2) / (2c)
+        l2_loss = (diff[~mask] ** 2 + self.threshold**2) / (2 * self.threshold)
+
+        if l1_loss.numel() == 0:
+            return l2_loss.mean()
+        if l2_loss.numel() == 0:
+            return l1_loss.mean()
+
+        return (l1_loss.sum() + l2_loss.sum()) / diff.numel()
+
+
+class GradientDifferenceLoss(nn.Module):
+    """Penalizes differences in the gradient of the image.
+    Popular in Medical Imaging and Video Frame Interpolation.
+    """
+
+    def __init__(self, alpha=1.0):
+        super().__init__()
+        self.alpha = alpha
+
+    def forward(self, pred, target):
+        # Calculate gradients in X and Y direction
+        # shape: [B, C, H, W]
+
+        # Vertical Gradients (dy)
+        pred_dy = torch.abs(pred[:, :, 1:, :] - pred[:, :, :-1, :])
+        target_dy = torch.abs(target[:, :, 1:, :] - target[:, :, :-1, :])
+
+        # Horizontal Gradients (dx)
+        pred_dx = torch.abs(pred[:, :, :, 1:] - pred[:, :, :, :-1])
+        target_dx = torch.abs(target[:, :, :, 1:] - target[:, :, :, :-1])
+
+        # We want the MAGNITUDE of the gradients to match (Texture preservation)
+        # AND the values to match (Edge alignment)
+        loss_y = torch.pow(torch.abs(pred_dy - target_dy), self.alpha)
+        loss_x = torch.pow(torch.abs(pred_dx - target_dx), self.alpha)
+
+        return loss_x.mean() + loss_y.mean()
 
 
 class SpatialGradientLoss(nn.Module):
@@ -91,42 +323,53 @@ class DOFASemanticLoss(nn.Module):
         return l_feat
 
 
+# ...existing code...
+
+
 class EOConsistencyLoss(nn.Module):
     def __init__(
         self,
-        pixel_weight: float = 1.0,  # Basic L1 loss
+        pixel_weight: float = 1.0,  # Reconstruction loss weight (L1 or Charbonnier)
+        rec_loss_type: str = 'l1',  # 'l1' or 'char' for reconstruction loss
         spectral_weight: float = 0.5,  # SAM for spectral accuracy
         spatial_weight: float = 0.5,  # Gradient for edges
         freq_weight: float = 0.1,  # FFT for textures
         feature_weight: float = 0.0,  # Optional DOFA features
+        msssim_weight: float = 0.0,  # MS-SSIM loss
         spectral_start_step: int = 1000,
         spatial_start_step: int = 2000,
         freq_start_step: int = 5000,
         feature_start_step: int = 5000,
+        msssim_start_step: int = 2000,
         dofa_net: nn.Module = None,
     ):
         """Initializes the EO Consistency Loss with multiple components.
 
         Args:
-            pixel_weight: Weight for pixel-wise L1 loss.
+            pixel_weight: Weight for reconstruction loss (L1 or Charbonnier).
+            rec_loss_type: Type of reconstruction loss ('l1' or 'char').
             spectral_weight: Weight for spectral angle mapper loss, useful for multispectral data.
             spatial_weight: Weight for spatial gradient loss to preserve edges.
             freq_weight: Weight for focal frequency loss to capture textures.
             feature_weight: Weight for semantic feature loss using a pretrained DOFA network.
+            msssim_weight: Weight for MS-SSIM loss.
             spectral_start_step: Global step to start applying spectral loss.
             spatial_start_step: Global step to start applying spatial loss.
             freq_start_step: Global step to start applying frequency loss.
             feature_start_step: Global step to start applying feature loss.
+            msssim_start_step: Global step to start applying MS-SSIM loss.
             dofa_net: Pretrained DOFA network for feature extraction (if feature_weight > 0).
 
         """
         super().__init__()
 
+        self.rec_loss_type = rec_loss_type
         self.starts = {
             'spectral': spectral_start_step,
             'spatial': spatial_start_step,
             'freq': freq_start_step,
             'feature': feature_start_step,
+            'msssim': msssim_start_step,
         }
         self.weights = {
             'pixel': pixel_weight,
@@ -134,11 +377,14 @@ class EOConsistencyLoss(nn.Module):
             'spatial': spatial_weight,
             'freq': freq_weight,
             'feature': feature_weight,
+            'msssim': msssim_weight,
         }
 
-        self.sam_loss = SpectralAngleMapperLoss()
-        self.grad_loss = SpatialGradientLoss()
+        self.sam_loss = SAMLoss()
+        self.grad_loss = GradientDifferenceLoss()
         self.fft_loss = FFL(loss_weight=1.0, alpha=1.0)
+        self.char_loss = CharbonnierLoss()
+        self.msssim_loss = SSIMLoss()
         self.feature_loss = DOFASemanticLoss(dofa_net) if dofa_net is not None else None
 
     def forward(
@@ -154,11 +400,16 @@ class EOConsistencyLoss(nn.Module):
         # Initialize as tensor to ensure device consistency
         total_loss = torch.tensor(0.0, device=inputs.device)
 
-        # 1. Pixel Loss (Always Active)
+        # 1. Reconstruction Loss (Always Active, L1 or Charbonnier)
         if self.weights['pixel'] > 0:
-            l_pix = F.l1_loss(reconstructions, inputs)
-            total_loss = total_loss + self.weights['pixel'] * l_pix
-            logs[f'{split}/loss_rec'] = l_pix.detach()
+            if self.rec_loss_type == 'l1':
+                l_rec = F.l1_loss(reconstructions, inputs)
+            elif self.rec_loss_type == 'char':
+                l_rec = self.char_loss(reconstructions, inputs)
+            else:
+                raise ValueError("rec_loss_type must be 'l1' or 'char'")
+            total_loss = total_loss + self.weights['pixel'] * l_rec
+            logs[f'{split}/loss_rec'] = l_rec.detach()
 
         # 2. Spectral Loss (Scheduled)
         if self.weights['spectral'] > 0:
@@ -166,9 +417,6 @@ class EOConsistencyLoss(nn.Module):
                 l_sam = self.sam_loss(reconstructions, inputs)
                 total_loss = total_loss + self.weights['spectral'] * l_sam
                 logs[f'{split}/loss_spectral'] = l_sam.detach()
-            else:
-                # Log 0.0 so charts don't break during warm-up
-                logs[f'{split}/loss_spectral'] = torch.tensor(0.0, device=inputs.device)
 
         # 3. Spatial Loss (Scheduled)
         if self.weights['spatial'] > 0:
@@ -176,8 +424,6 @@ class EOConsistencyLoss(nn.Module):
                 l_spat = self.grad_loss(reconstructions, inputs)
                 total_loss = total_loss + self.weights['spatial'] * l_spat
                 logs[f'{split}/loss_spatial'] = l_spat.detach()
-            else:
-                logs[f'{split}/loss_spatial'] = torch.tensor(0.0, device=inputs.device)
 
         # 4. Frequency Loss (Scheduled)
         if self.weights['freq'] > 0:
@@ -185,18 +431,23 @@ class EOConsistencyLoss(nn.Module):
                 l_freq = self.fft_loss(reconstructions, inputs)
                 total_loss = total_loss + self.weights['freq'] * l_freq
                 logs[f'{split}/loss_freq'] = l_freq.detach()
-            else:
-                logs[f'{split}/loss_freq'] = torch.tensor(0.0, device=inputs.device)
 
-        # 5. Semantic Feature Loss (Scheduled + Requires Net)
+        # 5. MS-SSIM Loss (Scheduled)
+        if self.weights['msssim'] > 0:
+            if global_step >= self.starts['msssim']:
+                l_msssim = self.msssim_loss(reconstructions, inputs)
+                total_loss = total_loss + self.weights['msssim'] * l_msssim
+                logs[f'{split}/loss_msssim'] = l_msssim.detach()
+
+        # 6. Semantic Feature Loss (Scheduled + Requires Net)
         if self.weights['feature'] > 0:
             if global_step >= self.starts['feature']:
                 l_feat = self.feature_loss(inputs, reconstructions, wvs)
                 total_loss += self.weights['feature'] * l_feat
                 logs[f'{split}/loss_feature'] = l_feat.detach()
-            else:
-                logs[f'{split}/loss_feature'] = torch.tensor(0.0, device=inputs.device)
 
         logs[f'{split}/loss_total'] = total_loss.detach()
-
         return total_loss, logs
+
+
+# ...existing code...

@@ -183,6 +183,125 @@ class TransformerWeightGenerator_decoder(TransformerWeightGenerator):
         return weights, bias
 
 
+class FactorizedWeightGenerator(nn.Module):
+    """Factorized Dynamic Weight Generator.
+    Uses a Low-Rank bottleneck to reduce parameter count while maintaining capacity.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        embed_dim: int,
+        num_heads: int = 4,
+        num_layers: int = 2,
+        rank_ratio: int = 4,  # Reduction factor for the bottleneck
+    ) -> None:
+        super().__init__()
+
+        # 1. Deeper Transformer Backbone
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=input_dim,
+            nhead=num_heads,
+            dim_feedforward=input_dim * 4,
+            activation='gelu',
+            norm_first=True,  # Pre-norm is generally more stable for deep transformers
+            batch_first=False,
+            dropout=0.1,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers, enable_nested_tensor=False
+        )
+
+        # 2. Factorized Projection Head (Low-Rank)
+        # Instead of one massive Linear(input, output), we use:
+        # Linear(input, rank) -> GELU -> Linear(rank, output)
+        rank = max(32, output_dim // rank_ratio)
+
+        self.fc_weight = nn.Sequential(
+            nn.Linear(input_dim, rank), nn.GELU(), nn.Linear(rank, output_dim)
+        )
+
+        self.fc_bias = nn.Linear(input_dim, embed_dim)
+
+        self.wt_num = 128
+        self.weight_tokens = nn.Parameter(torch.empty([self.wt_num, input_dim]))
+        self.bias_token = nn.Parameter(torch.empty([1, input_dim]))
+
+        torch.nn.init.normal_(self.weight_tokens, std=0.02)
+        torch.nn.init.normal_(self.bias_token, std=0.02)
+
+        # Initialize the factorized head carefully
+        self._init_head()
+
+    def _init_head(self):
+        # Initialize the last layer of the head to near-zero to start with identity-like behavior
+        nn.init.xavier_uniform_(self.fc_weight[0].weight)
+        nn.init.zeros_(self.fc_weight[-1].weight)
+        nn.init.zeros_(self.fc_weight[-1].bias)
+
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        pos_wave = x
+        x = torch.cat([self.weight_tokens, pos_wave], dim=0)
+        x = torch.cat([x, self.bias_token], dim=0)
+
+        transformer_output = self.transformer_encoder(x)
+
+        # Extract features corresponding to wavelengths
+        # Shape: [seq_len, batch, dim]
+        features = transformer_output[self.wt_num : -1] + pos_wave
+
+        # Generate weights via factorized head
+        weights = self.fc_weight(features)
+
+        bias = self.fc_bias(transformer_output[-1])
+        return weights, bias
+
+
+class FactorizedWeightGenerator_decoder(FactorizedWeightGenerator):
+    """Decoder version of Factorized Dynamic Weight Generator.
+    Adapts the bias generation to output a single scalar per wavelength channel.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        embed_dim: int,
+        num_heads: int = 4,
+        num_layers: int = 2,
+        rank_ratio: int = 4,
+    ) -> None:
+        super().__init__(
+            input_dim, output_dim, embed_dim, num_heads, num_layers, rank_ratio
+        )
+        # Decoder specific: Bias is 1 per output channel (wavelength)
+        # Overwrite the fc_bias from the parent class
+        self.fc_bias = nn.Linear(input_dim, 1)
+
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        pos_wave = x
+        x = torch.cat([self.weight_tokens, pos_wave], dim=0)
+        x = torch.cat([x, self.bias_token], dim=0)
+
+        transformer_output = self.transformer_encoder(x)
+
+        # Extract features corresponding to wavelengths
+        # Shape: [seq_len, batch, dim]
+        features = transformer_output[self.wt_num : -1] + pos_wave
+
+        # Generate weights via factorized head
+        weights = self.fc_weight(features)
+
+        # Decoder specific bias generation:
+        # We generate a bias value for EACH wavelength token
+        # Logic matches TransformerWeightGenerator_decoder: add bias token to features
+        bias_features = features + self.bias_token.repeat((pos_wave.shape[0], 1))
+        bias = self.fc_bias(bias_features)
+
+        return weights, bias
+
+
 class Basic1d(nn.Module):
     """Basic 1D convolutional block with optional layer norm and ReLU activation."""
 
@@ -258,16 +377,24 @@ class DynamicConv(nn.Module):
         stride: int = 1,
         padding: int = 1,
         embed_dim: int = 128,
+        num_layers: int = 1,
+        num_heads: int = 4,
+        generator_type: str = 'transformer',  # 'transformer' or 'factorized'
+        rank_ratio: int = 4,  # Only used for factorized generator
     ) -> None:
         """Initialize dynamic convolution.
 
         Args:
-            wv_planes: Dimension of wavelength features
+            wv_planes: Dimension of wavelength features (Transformer d_model)
             inter_dim: Intermediate dimension size
             kernel_size: Size of convolution kernel
             stride: Convolution stride
             padding: Convolution padding
             embed_dim: Embedding dimension
+            num_layers: Number of transformer layers in weight generator
+            num_heads: Number of attention heads in weight generator
+            generator_type: Type of weight generator ('transformer' or 'factorized')
+            rank_ratio: Reduction ratio for factorized generator bottleneck
         """
         super().__init__()
         self.kernel_size = kernel_size
@@ -280,11 +407,29 @@ class DynamicConv(nn.Module):
         self.num_patches = -1
         self.stride = stride
         self.padding = padding
+        self.generator_type = generator_type
 
-        self.weight_generator = TransformerWeightGenerator(
-            wv_planes, self._num_kernel, embed_dim
-        )
-        self.scaler = 0.01
+        if generator_type == 'factorized':
+            self.weight_generator = FactorizedWeightGenerator(
+                wv_planes,
+                self._num_kernel,
+                embed_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+                rank_ratio=rank_ratio,
+            )
+            self.use_weight_standardization = False
+        else:
+            self.weight_generator = TransformerWeightGenerator(
+                wv_planes,
+                self._num_kernel,
+                embed_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+            )
+            self.use_weight_standardization = False
+
+        self.scaler = 0.1
 
         self.fclayer = FCResLayer(wv_planes)
 
@@ -303,12 +448,25 @@ class DynamicConv(nn.Module):
         """
         if isinstance(m, nn.Linear):
             init.xavier_uniform_(m.weight)
-            m.bias.data.fill_(0.01)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
 
     def _init_weights(self) -> None:
         """Initialize base weights and dynamic MLP weights."""
         self.weight_generator.apply(self.weight_init)
         self.fclayer.apply(self.weight_init)
+
+    def weight_standardization(self, weight: Tensor, eps: float = 1e-5) -> Tensor:
+        """Apply Weight Standardization to generated weights.
+
+        Centers the weights and scales them to unit variance.
+        Crucial for HyperNetworks to prevent signal explosion.
+        """
+        # weight shape: [Out, In, K, K]
+        mean = weight.mean(dim=[1, 2, 3], keepdim=True)
+        var = weight.var(dim=[1, 2, 3], keepdim=True)
+        weight = (weight - mean) / (torch.sqrt(var + eps))
+        return weight
 
     def get_distillation_weight(self, wvs_microns: Tensor):
         # 1. Positional Embedding
@@ -327,26 +485,11 @@ class DynamicConv(nn.Module):
         )
         dyn_weight = dyn_weight.permute([3, 0, 1, 2])
 
+        if self.use_weight_standardization:
+            dyn_weight = self.weight_standardization(dyn_weight)
+
         # 4. Process Bias (Encoder)
-        # In forward(), bias is view([embed_dim]).
-        # But here, we are generating it dynamically?
-        # Actually, usually HyperNetworks generate bias per output channel.
-        # If your _get_weights returns a bias of shape [1, Embed_Dim] or similar,
-        # we need to make sure it matches the Teacher's [128] shape.
-
-        # NOTE: In your provided code for DynamicConv (Encoder):
-        # bias = bias.view([self.embed_dim]) * self.scaler
-        # This implies the bias is NOT dependent on the input wavelength count 'inplanes'
-        # but fixed to the output dimension (128).
-
         if bias is not None:
-            # bias shape likely comes out as [1, embed_dim] or [inplanes, embed_dim] depending on implementation
-            # For the encoder, the bias is for the OUTPUT features (128 channels).
-            # We usually take the mean or first element if it generates multiple,
-            # BUT standard DynamicConv often generates 1 bias vector for the whole layer.
-
-            # Checking your forward code: "bias = bias.view([self.embed_dim])"
-            # This suggests _get_weights returns something that fits into [128].
             dyn_bias = bias.view([self.embed_dim]) * self.scaler
         else:
             dyn_bias = None
@@ -372,6 +515,9 @@ class DynamicConv(nn.Module):
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
         )
         dynamic_weight = dynamic_weight.permute([3, 0, 1, 2])
+
+        if self.use_weight_standardization:
+            dynamic_weight = self.weight_standardization(dynamic_weight)
 
         if bias is not None:
             bias = bias.view([self.embed_dim]) * self.scaler
@@ -400,6 +546,10 @@ class DynamicConv_decoder(nn.Module):
         stride: int = 1,
         padding: int = 1,
         embed_dim: int = 128,
+        num_layers: int = 2,
+        num_heads: int = 4,
+        generator_type: str = 'transformer',  # 'transformer' or 'factorized'
+        rank_ratio: int = 4,  # Only used for factorized generator
     ) -> None:
         """Initialize decoder dynamic convolution.
 
@@ -410,6 +560,10 @@ class DynamicConv_decoder(nn.Module):
             stride: Convolution stride
             padding: Convolution padding
             embed_dim: Embedding dimension
+            num_layers: Number of transformer layers in weight generator
+            num_heads: Number of attention heads in weight generator
+            generator_type: Type of weight generator ('transformer' or 'factorized')
+            rank_ratio: Reduction ratio for factorized generator bottleneck
         """
         super().__init__()
         self.kernel_size = kernel_size
@@ -422,10 +576,28 @@ class DynamicConv_decoder(nn.Module):
         self.num_patches = -1
         self.stride = stride
         self.padding = padding
+        self.generator_type = generator_type
 
-        self.weight_generator = TransformerWeightGenerator_decoder(
-            wv_planes, self._num_kernel, embed_dim
-        )
+        if generator_type == 'factorized':
+            self.weight_generator = FactorizedWeightGenerator_decoder(
+                wv_planes,
+                self._num_kernel,
+                embed_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+                rank_ratio=rank_ratio,
+            )
+            self.use_weight_standardization = False
+        else:
+            self.weight_generator = TransformerWeightGenerator_decoder(
+                wv_planes,
+                self._num_kernel,
+                embed_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+            )
+            self.use_weight_standardization = False
+
         self.scaler = 0.1
 
         self.fclayer = FCResLayer(wv_planes)
@@ -452,6 +624,17 @@ class DynamicConv_decoder(nn.Module):
         self.weight_generator.apply(self.weight_init)
         self.fclayer.apply(self.weight_init)
 
+    def weight_standardization(self, weight: Tensor, eps: float = 1e-5) -> Tensor:
+        """Apply Weight Standardization.
+
+        For Decoder: weight shape is [Out(Wavelengths), In(Embed), K, K]
+        We normalize over [In, K, K] dimensions (1, 2, 3).
+        """
+        mean = weight.mean(dim=[1, 2, 3], keepdim=True)
+        var = weight.var(dim=[1, 2, 3], keepdim=True)
+        weight = (weight - mean) / (torch.sqrt(var + eps))
+        return weight
+
     def get_distillation_weight(self, wvs_microns: Tensor):
         # 1. Positional Embedding
         waves = get_1d_sincos_pos_embed_from_grid_torch(
@@ -469,10 +652,10 @@ class DynamicConv_decoder(nn.Module):
         )
         dyn_weight = dyn_weight.permute([0, 3, 1, 2])
 
+        if self.use_weight_standardization:
+            dyn_weight = self.weight_standardization(dyn_weight)
+
         # 4. Process Bias (Decoder)
-        # In forward(): bias = bias.squeeze() * self.scaler
-        # Here, 'inplanes' is 3 (RGB). We expect the bias to be [3].
-        # The hypernetwork should generate 1 bias value PER wavelength query.
         if bias is not None:
             dyn_bias = bias.squeeze() * self.scaler
         else:
@@ -503,11 +686,15 @@ class DynamicConv_decoder(nn.Module):
         )
         dynamic_weight = dynamic_weight.permute([0, 3, 1, 2])
 
+        if self.use_weight_standardization:
+            dynamic_weight = self.weight_standardization(dynamic_weight)
+
         if bias is not None:
             bias = bias.squeeze() * self.scaler
 
         weights = dynamic_weight * self.scaler
-        bias = bias * self.scaler
+        if bias is not None:
+            bias = bias * self.scaler
 
         dynamic_out = F.conv2d(
             img_feat,

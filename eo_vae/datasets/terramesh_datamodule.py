@@ -1,5 +1,7 @@
+import os
 import random
 
+import numpy as np
 import torch
 from lightning import LightningDataModule
 from omegaconf import ListConfig
@@ -10,6 +12,7 @@ from .terramesh import build_terramesh_dataset
 # Wavelength definitions for different modalities (in micrometers)
 WAVELENGTHS = {
     'S2RGB': [0.665, 0.56, 0.49],  # R, G, B
+    'S1RTC': [5.4, 5.6],  # VV, VH
     'S2L2A': [
         0.443,
         0.490,
@@ -173,15 +176,17 @@ def single_modality_collate_fn(modalities, normalize=True, target_size=(224, 224
                     f"Expected 'image' key for single modality {selected_modality}, but found: {batch.keys()}"
                 )
         else:
-            # Randomly select one modality for this batch
-            selected_modality = random.choice(modalities)
-            if selected_modality not in batch:
+            # Randomly select one modality for this batch that is also in the batch, or keep trying
+            available_modalities = [mod for mod in modalities if mod in batch]
+            if not available_modalities:
                 raise ValueError(
-                    f'Modality {selected_modality} not found in batch. Available: {batch.keys()}'
+                    f'None of the specified modalities {modalities} found in batch keys {batch.keys()}'
                 )
+            selected_modality = random.choice(available_modalities)
             images = batch[selected_modality]
 
-        images = torch.from_numpy(images)
+        if isinstance(images, np.ndarray):
+            images = torch.from_numpy(images)
         if normalize:
             images = normalize_image(images, selected_modality)
 
@@ -227,7 +232,8 @@ def deterministic_modality_collate_fn(modality, normalize=True, target_size=(224
                 f'Modality {modality} not found in batch. Available: {batch.keys()}'
             )
 
-        images = torch.from_numpy(images)
+        if isinstance(images, np.ndarray):
+            images = torch.from_numpy(images)
         if normalize:
             images = normalize_image(images, modality)
 
@@ -316,18 +322,32 @@ class TerraMeshDataModule(LightningDataModule):
 
     def setup(self, stage=None):
         """Set up the train and validation datasets."""
+        train_urls = os.path.join(
+            self.data_path,
+            'train',
+            f'[{",".join(self.modalities)}]',
+            'majortom_shard_{000001..000025}.tar',
+        )
         self.train_dataset = build_terramesh_dataset(
             path=self.data_path,
+            urls=train_urls,
             modalities=self.modalities,
-            split='val',
+            split='train',
             batch_size=self.batch_size,
             shuffle=True,
             **self.kwargs,
+        )
+        val_urls = os.path.join(
+            self.data_path,
+            'val',
+            f'[{",".join(self.modalities)}]',
+            'majortom_shard_{000001..000008}.tar',
         )
         self.val_dataset = build_terramesh_dataset(
             path=self.data_path,
             modalities=self.modalities,
             split='val',
+            urls=val_urls,
             batch_size=self.eval_batch_size,
             shuffle=False,
             **self.kwargs,

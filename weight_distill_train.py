@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from hydra.utils import instantiate
 from lightning import LightningDataModule, Trainer
-from lightning.pytorch.loggers import CSVLogger, WandbLogger
+from lightning.pytorch.loggers import CSVLogger
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset
 
@@ -72,21 +72,21 @@ def run_distillation(config, original_flux_ckpt_path):
     datamodule = DummyDataModule(batch_size=4)
 
     loggers = [
-        CSVLogger(save_dir=config['experiment']['save_dir']),
-        WandbLogger(
-            name=config['experiment']['experiment_name'],
-            save_dir=config['experiment']['save_dir'],
-            project=config['wandb']['project'],
-            entity=config['wandb']['entity'],
-            resume='allow',
-            mode=config['wandb']['mode'],
-        ),
+        CSVLogger(save_dir=config['experiment']['save_dir'])
+        # WandbLogger(
+        #     name=config['experiment']['experiment_name'],
+        #     save_dir=config['experiment']['save_dir'],
+        #     project=config['wandb']['project'],
+        #     entity=config['wandb']['entity'],
+        #     resume='allow',
+        #     mode=config['wandb']['mode'],
+        # ),
     ]
 
     # 5. Trainer for Short Run
     # Distillation is fast. 5-10 epochs of dummy data is usually enough to converge.
     trainer = Trainer(
-        max_epochs=10,
+        max_epochs=5,
         accelerator='gpu',
         devices=1,
         default_root_dir=config['experiment']['save_dir'],

@@ -5,6 +5,45 @@ import torch
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 
+WAVELENGTHS = {
+    'S2RGB': [0.665, 0.56, 0.49],  # R, G, B
+    'S2L2A': [
+        0.443,
+        0.490,
+        0.560,
+        0.665,
+        0.705,
+        0.740,
+        0.783,
+        0.842,
+        0.865,
+        1.610,
+        2.190,
+        0.945,
+    ],  # 12 bands
+    'S2L1C': [
+        0.443,
+        0.490,
+        0.560,
+        0.665,
+        0.705,
+        0.740,
+        0.783,
+        0.842,
+        0.865,
+        0.945,
+        1.375,
+        1.610,
+        2.190,
+    ],  # 13 bands
+}
+
+RGB_INDICES = {
+    'S2RGB': [0, 1, 2],  # Already RGB
+    'S2L2A': [3, 2, 1],  # R: 0.665 (B04), G: 0.560 (B03), B: 0.490 (B02)
+    'S2L1C': [3, 2, 1],  # Same as S2L2A
+}
+
 
 class ImageLogger(Callback):
     def __init__(self, max_images=8, save_dir='images'):
@@ -35,12 +74,20 @@ class ImageLogger(Callback):
         # No need for pl_module.eval() or torch.no_grad() context managers here;
         # Lightning puts the model in eval mode and disables grads during the val loop automatically.
 
-        images = pl_module.get_input(batch, pl_module.image_key)
+        # images = pl_module.get_input(batch, pl_module.image_key)
+        images = batch['image']
         wvs = batch['wvs']
         modality = batch.get('modality', 'S2RGB')
 
         # 1. Forward Pass
-        reconstruction, _ = pl_module(images, wvs)
+        with torch.no_grad():
+            reconstruction = pl_module(
+                images,
+                wvs,
+                # use_refiner=True if pl_module.training_mode == 'flow-refine' else False,
+            )
+            if isinstance(reconstruction, tuple):
+                reconstruction = reconstruction[0]
 
         # 2. Slice batch
         N = min(images.shape[0], self.max_images)
@@ -69,9 +116,9 @@ class ImageLogger(Callback):
             recons_phys = recons
 
         # 5. Helper: Physical -> Visual [0, 1]
-        def to_vis(x):
-            # RGB approximation (first 3 channels)
-            x = x[:, :3, :, :]
+        def to_vis(x, rgb_indices):
+            # Select RGB channels
+            x = x[:, rgb_indices, :, :]
             b, c, h, w = x.shape
             x_flat = x.view(b, c, -1)
 
@@ -86,10 +133,16 @@ class ImageLogger(Callback):
 
             return torch.stack(vis_batch)
 
-        inputs_vis = to_vis(inputs_phys)
-        recons_vis = to_vis(recons_phys)
+        rgb_indices = RGB_INDICES.get(
+            modality, [0, 1, 2]
+        )  # Default to first 3 if unknown
+        inputs_vis = to_vis(inputs_phys, rgb_indices)
+        recons_vis = to_vis(recons_phys, rgb_indices)
 
-        # Normalize Error Map
+        # Normalize Error Map (use mean diff across selected channels)
+        diff = torch.abs(
+            inputs_phys[:, rgb_indices, :, :] - recons_phys[:, rgb_indices, :, :]
+        ).mean(dim=1, keepdim=True)
         diff_vis = (diff - diff.min()) / (diff.max() - diff.min() + 1e-5)
         diff_vis = diff_vis.repeat(1, 3, 1, 1)
 
