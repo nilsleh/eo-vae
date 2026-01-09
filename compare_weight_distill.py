@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -103,6 +104,7 @@ def plot_batch_comparison(
     mses_trained: list[float],
     mses_original: list[float],
     num_samples: int,
+    save_path: str,
 ):
     """Plot a grid of original, trained reconstruction, and original reconstruction for multiple samples."""
     fig, axes = plt.subplots(num_samples, 3, figsize=(18, 6 * num_samples))
@@ -125,7 +127,8 @@ def plot_batch_comparison(
         axes[i, 2].axis('off')
 
     fig.suptitle('Reconstruction Comparison (Batch)', fontsize=16)
-    fig.savefig('recon_comparison_batch.png')
+    fig.savefig(save_path)
+    plt.close()
 
 
 def main():
@@ -221,6 +224,10 @@ def main():
         for i in range(num_samples)
     ]
 
+    save_path = os.path.join(
+        cfg['experiment']['save_dir'], 'reconstruction_comparison.png'
+    )
+
     # Plot comparison for the batch
     plot_batch_comparison(
         originals,
@@ -229,6 +236,7 @@ def main():
         mses_trained,
         mses_original,
         num_samples,
+        save_path,
     )
 
 

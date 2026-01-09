@@ -10,6 +10,8 @@ from terratorch.registry import FULL_MODEL_REGISTRY
 
 from eo_vae.datasets.terramesh_datamodule import NORM_STATS
 
+OmegaConf.register_new_resolver('eval', eval)
+
 
 def unnormalize(tensor, modality):
     """Reverse the normalization for visualization."""
@@ -84,7 +86,7 @@ def main():
     parser.add_argument('--config', type=str, required=True)
     parser.add_argument('--ckpt', type=str, required=True)
     parser.add_argument(
-        '--modality', type=str, default='S2L2A', choices=['S2L2A', 'S1RTC']
+        '--modality', type=str, default='S2L2A', choices=['S2L2A', 'S1RTC', 'S2RGB']
     )
     parser.add_argument('--batch_idx', type=int, default=0)
     parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
@@ -114,7 +116,7 @@ def main():
     # Infer model name from modality
     tm_model_name = (
         'terramind_v1_tokenizer_s2l2a'
-        if args.modality == 'S2L2A'
+        if args.modality in ['S2L2A', 'S2RGB']
         else 'terramind_v1_tokenizer_s1rtc'
     )
 
@@ -142,16 +144,20 @@ def main():
     from einops import rearrange
 
     with torch.no_grad():
-        # eo-vae
-        latents_eo = eo_vae.encode(images, wvs).mode()
-        z_shuffled = rearrange(
-            latents_eo,
-            '... c (i pi) (j pj) -> ... (c pi pj) i j',
-            pi=eo_vae.ps[0],
-            pj=eo_vae.ps[1],
-        )
-        z_normalized = eo_vae.normalize_latent(z_shuffled)
-        eo_recon = eo_vae.decode(z_normalized, wvs)
+        # eo-vae if it has flux in class name:
+        if 'Flux' in eo_vae.__class__.__name__:
+            latents_eo = eo_vae.encode(images, wvs).mode()
+            z_shuffled = rearrange(
+                latents_eo,
+                '... c (i pi) (j pj) -> ... (c pi pj) i j',
+                pi=eo_vae.ps[0],
+                pj=eo_vae.ps[1],
+            )
+            z_normalized = eo_vae.normalize_latent(z_shuffled)
+            eo_recon = eo_vae.decode(z_normalized, wvs)
+        else:
+            latents_eo = eo_vae.encode(images, wvs)
+            eo_recon = eo_vae.decode(latents_eo, wvs)
 
         # terramind
         tm_recon = tm_model(images, timesteps=20)

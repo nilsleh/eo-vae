@@ -321,9 +321,6 @@ def build_wds_dataset(
         # Setting empty_check to True to avoid errors because of a single shard file in SSL4EOS12 S1GRD val split
         empty_check = False
 
-    import pdb
-
-    pdb.set_trace()
     # Build dataset
     dataset = wds.WebDataset(
         urls,

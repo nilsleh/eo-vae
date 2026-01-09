@@ -113,6 +113,25 @@ class EOSSDD(LightningModule):
 
         self.t_sampler = TimeSamplerLogitNormal(t_mean=0, t_std=1.0)
 
+    def encode(self, x: Tensor, wvs: Tensor) -> Tensor:
+        """Encode input images x into latent representations z."""
+        with torch.no_grad():
+            z = self.encoder(x, wvs)
+        return z
+
+    def decode(self, z: Tensor, wvs: Tensor) -> Tensor:
+        """Decode latent representations z into images x using the flow sampler."""
+        B = z.shape[0]
+        x_t = torch.randn(
+            B,
+            len(wvs),
+            self.encoder.resolution,
+            self.encoder.resolution,
+            device=z.device,
+        )
+        sampler = self.sampler(self.denoiser, steps=25)
+        return sampler(x=x_t, z=z, wvs=wvs)
+
     def forward(self, x_input, wvs):
         """Inference: Encode -> Sample -> Decode (Implicitly via flow)"""
         B = x_input.shape[0]

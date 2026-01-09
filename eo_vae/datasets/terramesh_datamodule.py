@@ -1,18 +1,16 @@
 import os
 import random
-
 import numpy as np
 import torch
 from lightning import LightningDataModule
 from omegaconf import ListConfig
 from torch.utils.data import DataLoader
-
 from .terramesh import build_terramesh_dataset
 
-# Wavelength definitions for different modalities (in micrometers)
+# Wavelength definitions (unchanged)
 WAVELENGTHS = {
-    'S2RGB': [0.665, 0.56, 0.49],  # R, G, B
-    'S1RTC': [5.4, 5.6],  # VV, VH
+    'S2RGB': [0.665, 0.56, 0.49],
+    'S1RTC': [5.4, 5.6],
     'S2L2A': [
         0.443,
         0.490,
@@ -26,7 +24,7 @@ WAVELENGTHS = {
         1.610,
         2.190,
         0.945,
-    ],  # 12 bands
+    ],
     'S2L1C': [
         0.443,
         0.490,
@@ -41,111 +39,153 @@ WAVELENGTHS = {
         1.375,
         1.610,
         2.190,
-    ],  # 13 bands
+    ],
 }
 
+# Updated with your computed stats
 NORM_STATS = {
-    'S2L1C': {
-        'mean': [
-            2357.090,
-            2137.398,
-            2018.799,
-            2082.998,
-            2295.663,
-            2854.548,
-            3122.860,
-            3040.571,
-            3306.491,
-            1473.849,
-            506.072,
-            2472.840,
-            1838.943,
-        ],
-        'std': [
-            1673.639,
-            1722.641,
-            1602.205,
-            1873.138,
-            1866.055,
-            1779.839,
-            1776.496,
-            1724.114,
-            1771.041,
-            1079.786,
-            512.404,
-            1340.879,
-            1172.435,
-        ],
-    },
     'S2L2A': {
         'mean': [
-            1390.461,
-            1503.332,
-            1718.211,
-            1853.926,
-            2199.116,
-            2779.989,
-            2987.025,
-            3083.248,
-            3132.235,
-            3162.989,
-            2424.902,
-            1857.665,
+            1375.648,
+            1489.600,
+            1709.087,
+            1831.752,
+            2186.075,
+            2794.358,
+            3008.528,
+            3096.780,
+            3155.180,
+            3169.651,
+            2415.761,
+            1838.622,
         ],
         'std': [
-            2131.157,
-            2163.666,
-            2059.311,
-            2152.477,
-            2105.179,
-            1912.773,
-            1842.326,
-            1893.568,
-            1775.656,
-            1814.907,
-            1436.282,
-            1336.155,
+            2101.107,
+            2138.673,
+            2033.628,
+            2118.186,
+            2061.646,
+            1869.234,
+            1801.386,
+            1841.173,
+            1734.404,
+            1751.174,
+            1375.131,
+            1284.165,
         ],
+        'robust_min': 0.0,
+        'robust_max': 4000.0,  # Based on histogram peaks/land-surface range
     },
-    'S2RGB': {'mean': [110.349, 99.507, 75.843], 'std': [69.905, 53.708, 53.378]},
-    'S1GRD': {'mean': [-12.577, -20.265], 'std': [5.179, 5.872]},
-    'S1RTC': {'mean': [-10.93, -17.329], 'std': [4.391, 4.459]},
-    'NDVI': {'mean': [0.327], 'std': [0.322]},
-    'DEM': {'mean': [651.663], 'std': [928.168]},
+    'S1RTC': {
+        'mean': [-10.793, -17.198],
+        'std': [4.278, 4.346],
+        'robust_min': -25.0,
+        'robust_max': 0.0,
+    },
+    'S2L1C': {
+        'mean': [
+            2475.625,
+            2260.839,
+            2143.561,
+            2230.225,
+            2445.427,
+            2992.950,
+            3257.843,
+            3171.695,
+            3440.958,
+            1567.433,
+            561.076,
+            2562.809,
+            1924.178,
+        ],
+        'std': [
+            1761.905,
+            1804.267,
+            1661.263,
+            1932.020,
+            1918.007,
+            1812.421,
+            1795.179,
+            1734.280,
+            1780.039,
+            1082.531,
+            512.077,
+            1350.580,
+            1177.511,
+        ],
+        'robust_min': 0.0,
+        'robust_max': 4500.0,
+    },
+    'S2RGB': {
+        'mean': [110.349, 99.507, 75.843],
+        'std': [69.905, 53.708, 53.378],
+        'robust_min': 0.0,
+        'robust_max': 255.0,
+    },
+    'DEM': {
+        'mean': [651.663],
+        'std': [928.168],
+        'robust_min': 0.0,
+        'robust_max': 2500.0,
+    },
 }
 
 
-def normalize_image(image: torch.Tensor, modality: str) -> torch.Tensor:
-    """Normalize image tensor using mean/std for the modality."""
+def normalize_image(
+    image: torch.Tensor, modality: str, method='zscore'
+) -> torch.Tensor:
+    """Normalize image tensor using chosen method."""
     if modality not in NORM_STATS:
         raise ValueError(f'Unknown modality {modality} for normalization.')
 
-    mean = torch.tensor(NORM_STATS[modality]['mean'], device=image.device).view(
-        -1, 1, 1
-    )
-    std = torch.tensor(NORM_STATS[modality]['std'], device=image.device).view(-1, 1, 1)
-    return (image - mean) / (std + 1e-8)
+    stats = NORM_STATS[modality]
+    device = image.device
+
+    if method == 'zscore':
+        mean = torch.tensor(stats['mean'], device=device).view(-1, 1, 1)
+        std = torch.tensor(stats['std'], device=device).view(-1, 1, 1)
+        return (image - mean) / (std + 1e-8)
+
+    elif method == 'robust':
+        v_min = stats['robust_min']
+        v_max = stats['robust_max']
+        # Linear stretch mapping [min, max] to [-1, 1]
+        image = (image - v_min) / (v_max - v_min + 1e-8) * 2.0 - 1.0
+        # Optional: clamp to avoid extreme cloud/glint outliers destabilizing gradients
+        # return torch.clamp(image, -2.5, 5.0)
+        return torch.clamp(image, -1.0, 1.0)
+
+    else:
+        raise ValueError(f'Normalization method {method} not supported.')
 
 
-# def normalize_image(image: torch.Tensor, modality: str) -> torch.Tensor:
-#     """Normalize image tensor using robust scaling: x = (x - (mean - 3*std)) / (6*std)."""
-#     if modality not in NORM_STATS:
-#         raise ValueError(f"Unknown modality {modality} for normalization.")
+def unnormalize_image(
+    image: torch.Tensor, modality: str, method='zscore'
+) -> torch.Tensor:
+    """Inverse normalization to recover original units (DN or dB)."""
+    if modality not in NORM_STATS:
+        return image
 
-#     mean = torch.tensor(NORM_STATS[modality]["mean"], device=image.device).view(
-#         -1, 1, 1
-#     )
-#     std = torch.tensor(NORM_STATS[modality]["std"], device=image.device).view(-1, 1, 1)
+    stats = NORM_STATS[modality]
+    device = image.device
 
-#     # Compute xmin and xmax
-#     xmin = mean - 3 * std
-#     xmax = mean + 3 * std
+    if method == 'zscore':
+        mean = torch.tensor(stats['mean'], device=device).view(-1, 1, 1)
+        std = torch.tensor(stats['std'], device=device).view(-1, 1, 1)
+        return (image * std) + mean
 
-#     # Apply normalization: x = (x - xmin) / (xmax - xmin)
-#     return (image - xmin) / (xmax - xmin + 1e-8)
+    elif method == 'robust':
+        v_min = stats['robust_min']
+        v_max = stats['robust_max']
+        # Reverse linear stretch: [-1, 1] back to [min, max]
+        return ((image + 1.0) / 2.0) * (v_max - v_min) + v_min
+
+    return image
 
 
-def single_modality_collate_fn(modalities, normalize=True, target_size=(224, 224)):
+def single_modality_collate_fn(
+    modalities, normalize=True, norm_method='zscore', target_size=(224, 224)
+):
     """Collate function that randomly selects ONE modality per batch.
 
     Args:
@@ -188,7 +228,7 @@ def single_modality_collate_fn(modalities, normalize=True, target_size=(224, 224
         if isinstance(images, np.ndarray):
             images = torch.from_numpy(images)
         if normalize:
-            images = normalize_image(images, selected_modality)
+            images = normalize_image(images, selected_modality, method=norm_method)
 
         if target_size is not None and images.shape[-2:] != target_size:
             images = torch.nn.functional.interpolate(
@@ -207,7 +247,9 @@ def single_modality_collate_fn(modalities, normalize=True, target_size=(224, 224
     return collate
 
 
-def deterministic_modality_collate_fn(modality, normalize=True, target_size=(224, 224)):
+def deterministic_modality_collate_fn(
+    modality, normalize=True, norm_method='zscore', target_size=(224, 224)
+):
     """Collate function that always uses the SAME modality.
 
     Useful for validation where you want consistent modality.
@@ -235,7 +277,7 @@ def deterministic_modality_collate_fn(modality, normalize=True, target_size=(224
         if isinstance(images, np.ndarray):
             images = torch.from_numpy(images)
         if normalize:
-            images = normalize_image(images, modality)
+            images = normalize_image(images, modality, method=norm_method)
 
         if target_size is not None and images.shape[-2:] != target_size:
             images = torch.nn.functional.interpolate(
@@ -250,8 +292,6 @@ def deterministic_modality_collate_fn(modality, normalize=True, target_size=(224
 
 
 class TerraMeshDataModule(LightningDataModule):
-    """Lightning DataModule for TerraMesh streaming datasets with multi-modality support."""
-
     def __init__(
         self,
         data_path,
@@ -259,73 +299,73 @@ class TerraMeshDataModule(LightningDataModule):
         batch_size=8,
         eval_batch_size=16,
         num_workers=4,
-        train_collate_mode='random',  # "random" or specific modality name
-        val_collate_mode='S2L2A',  # Deterministic modality for validation
+        train_collate_mode='random',
+        val_collate_mode='S2L2A',
         normalize=True,
+        norm_method='z-score',
         target_size=(224, 224),
         **kwargs,
     ):
-        """Initialize the TerraMeshDataModule.
-
-        Args:
-            data_path (str): Path to the TerraMesh dataset.
-            modalities (list): List of modalities to load (e.g., ['S2RGB', 'S2L2A']).
-            batch_size (int): Batch size for training.
-            eval_batch_size (int): Batch size for validation.
-            num_workers (int): Number of worker processes for data loading.
-            train_collate_mode (str): Either "random" to randomly select modality per batch,
-                                     or a specific modality name for deterministic selection.
-            val_collate_mode (str): Modality to use for validation (should be deterministic).
-            normalize (bool): Whether to apply 0-1 normalization.
-            target_size (tuple): Target image size (H, W).
-            **kwargs: Additional keyword arguments for the dataset loader.
-        """
         super().__init__()
         self.data_path = data_path
         self.modalities = modalities
         self.batch_size = batch_size
         self.eval_batch_size = eval_batch_size
         self.num_workers = num_workers
-        self.train_collate_mode = train_collate_mode
-        self.val_collate_mode = val_collate_mode
         self.normalize = normalize
+        self.norm_method = norm_method
+
+        self.kwargs = kwargs
+
         if isinstance(target_size, ListConfig):
             target_size = tuple(target_size)
         self.target_size = target_size
-        self.kwargs = kwargs
 
         # Make norm_stats accessible
         self.norm_stats = NORM_STATS
 
-        # Validate modalities have wavelength definitions
         for mod in modalities:
             if mod not in WAVELENGTHS:
                 raise ValueError(
                     f'Modality {mod} not supported. Available: {list(WAVELENGTHS.keys())}'
                 )
 
-        # Create collate functions
+        # Create collate functions with the chosen norm_method
         if train_collate_mode == 'random':
             self.train_collate_fn = single_modality_collate_fn(
-                modalities=modalities, normalize=normalize, target_size=target_size
+                modalities=modalities,
+                normalize=normalize,
+                norm_method=norm_method,
+                target_size=target_size,
             )
         else:
             self.train_collate_fn = deterministic_modality_collate_fn(
                 modality=train_collate_mode,
                 normalize=normalize,
+                norm_method=norm_method,
                 target_size=target_size,
             )
 
         self.val_collate_fn = deterministic_modality_collate_fn(
-            modality=val_collate_mode, normalize=normalize, target_size=target_size
+            modality=val_collate_mode,
+            normalize=normalize,
+            norm_method=norm_method,
+            target_size=target_size,
         )
 
     def setup(self, stage=None):
         """Set up the train and validation datasets."""
+        if len(self.modalities) > 1:
+            # Folder name format for multi-modality: [mod1,mod2,mod3]
+            mod_path_segment = f'[{",".join(self.modalities)}]'
+        else:
+            # Folder name format for single modality: mod1
+            mod_path_segment = self.modalities[0]
+
         train_urls = os.path.join(
             self.data_path,
             'train',
-            f'[{",".join(self.modalities)}]',
+            mod_path_segment,
             'majortom_shard_{000001..000025}.tar',
         )
         self.train_dataset = build_terramesh_dataset(
@@ -337,17 +377,46 @@ class TerraMeshDataModule(LightningDataModule):
             shuffle=True,
             **self.kwargs,
         )
+
         val_urls = os.path.join(
             self.data_path,
             'val',
-            f'[{",".join(self.modalities)}]',
-            'majortom_shard_{000001..000008}.tar',
+            mod_path_segment,
+            'majortom_shard_{000001..000005}.tar',
         )
+
+        test_urls = os.path.join(
+            self.data_path,
+            'val',
+            mod_path_segment,
+            'majortom_shard_{000006..000008}.tar',
+        )
+
+        self.train_dataset = build_terramesh_dataset(
+            path=self.data_path,
+            urls=train_urls,
+            modalities=self.modalities,
+            split='train',
+            batch_size=self.batch_size,
+            shuffle=True,
+            **self.kwargs,
+        )
+
         self.val_dataset = build_terramesh_dataset(
             path=self.data_path,
             modalities=self.modalities,
             split='val',
             urls=val_urls,
+            batch_size=self.eval_batch_size,
+            shuffle=False,
+            **self.kwargs,
+        )
+
+        self.test_dataset = build_terramesh_dataset(
+            path=self.data_path,
+            modalities=self.modalities,
+            split='val',
+            urls=test_urls,
             batch_size=self.eval_batch_size,
             shuffle=False,
             **self.kwargs,
@@ -367,6 +436,16 @@ class TerraMeshDataModule(LightningDataModule):
         """Return the validation DataLoader with deterministic modality."""
         return DataLoader(
             self.val_dataset,
+            batch_size=None,
+            num_workers=self.num_workers,
+            collate_fn=self.val_collate_fn,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self):
+        """Return the test DataLoader with deterministic modality."""
+        return DataLoader(
+            self.test_dataset,
             batch_size=None,
             num_workers=self.num_workers,
             collate_fn=self.val_collate_fn,

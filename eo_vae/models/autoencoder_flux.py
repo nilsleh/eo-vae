@@ -522,7 +522,7 @@ class FluxAutoencoderKL(LightningModule):
         # EQ-VAE Hyperparams / State
         # Discrete bins [8/32, 16/32, 24/32] -> [0.25, 0.5, 0.75]
         # This prevents the 'new shape every batch' slowdown
-        scale_bins = [0.25, 0.5, 0.75]
+        scale_bins = [0.375, 0.5, 0.75]
         current_mode = 'standard'
 
         # =========================================================

@@ -2,7 +2,9 @@ import torch
 import torch.fft
 import torch.nn as nn
 import torch.nn.functional as F
-from focal_frequency_loss import FocalFrequencyLoss as FFL
+
+# from focal_frequency_loss import FocalFrequencyLoss as FFL
+from .ffl import FocalFrequencyLoss as FFL
 from torch.nn.utils import spectral_norm
 from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
 
@@ -115,6 +117,7 @@ class EOPatchLoss(nn.Module):
         last_layer=None,
         split='train',
     ):
+        reconstructions = torch.clamp(reconstructions, -2.5, 5.0)
         # 1. GENERATOR BRANCH
         if optimizer_idx == 0:
             self.discriminator.eval()  # Freeze disc during gen step
@@ -323,9 +326,6 @@ class DOFASemanticLoss(nn.Module):
         return l_feat
 
 
-# ...existing code...
-
-
 class EOConsistencyLoss(nn.Module):
     def __init__(
         self,
@@ -341,6 +341,8 @@ class EOConsistencyLoss(nn.Module):
         freq_start_step: int = 5000,
         feature_start_step: int = 5000,
         msssim_start_step: int = 2000,
+        patch_factor: int = 2,
+        ffl_alpha: float = 1.0,
         dofa_net: nn.Module = None,
     ):
         """Initializes the EO Consistency Loss with multiple components.
@@ -382,7 +384,14 @@ class EOConsistencyLoss(nn.Module):
 
         self.sam_loss = SAMLoss()
         self.grad_loss = GradientDifferenceLoss()
-        self.fft_loss = FFL(loss_weight=1.0, alpha=1.0)
+        self.fft_loss = FFL(
+            loss_weight=1.0,
+            alpha=ffl_alpha,
+            patch_factor=patch_factor,
+            ave_spectrum=False,
+            batch_matrix=True,
+            log_matrix=True,
+        )
         self.char_loss = CharbonnierLoss()
         self.msssim_loss = SSIMLoss()
         self.feature_loss = DOFASemanticLoss(dofa_net) if dofa_net is not None else None
@@ -396,6 +405,9 @@ class EOConsistencyLoss(nn.Module):
         split: str = 'train',
         **kwargs,
     ):
+        # clamp reconstructions to valid range
+        reconstructions = torch.clamp(reconstructions, -1.0, 1.0)
+
         logs = {}
         # Initialize as tensor to ensure device consistency
         total_loss = torch.tensor(0.0, device=inputs.device)
@@ -425,12 +437,33 @@ class EOConsistencyLoss(nn.Module):
                 total_loss = total_loss + self.weights['spatial'] * l_spat
                 logs[f'{split}/loss_spatial'] = l_spat.detach()
 
-        # 4. Frequency Loss (Scheduled)
-        if self.weights['freq'] > 0:
-            if global_step >= self.starts['freq']:
-                l_freq = self.fft_loss(reconstructions, inputs)
-                total_loss = total_loss + self.weights['freq'] * l_freq
-                logs[f'{split}/loss_freq'] = l_freq.detach()
+        if self.weights['freq'] > 0 and global_step >= self.starts['freq']:
+            # 1. Calculate the raw loss once
+            raw_focal_freq_loss = self.fft_loss(reconstructions, inputs)
+
+            # 2. Calculate the warmup factor (0.0 to 1.0)
+            # Using max(0, ...) ensures we never have negative weight
+            # 1000 is your "warmup_duration"
+            warmup_steps = 1000
+            start_step = self.starts['freq']  # 6000
+
+            warmup_factor = min(
+                1.0, max(0.0, (global_step - start_step) / warmup_steps)
+            )
+
+            # 3. Apply both the warmup and your base weight
+            # If self.weights['freq'] is your "target" weight (e.g., 100.0), use it here
+            current_ffl_weight = self.weights['freq'] * warmup_factor
+
+            weighted_ffl_loss = raw_focal_freq_loss * current_ffl_weight
+
+            # 4. Update total loss and logs
+            total_loss = total_loss + weighted_ffl_loss
+
+            # Log the raw loss so you can see if the model is actually learning textures,
+            # and log the weight to verify the warmup in WandB/Tensorboard.
+            logs[f'{split}/loss_freq_raw'] = raw_focal_freq_loss.detach()
+            logs[f'{split}/ffl_weight'] = torch.tensor(current_ffl_weight)
 
         # 5. MS-SSIM Loss (Scheduled)
         if self.weights['msssim'] > 0:

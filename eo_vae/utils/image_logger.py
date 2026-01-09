@@ -78,7 +78,6 @@ class ImageLogger(Callback):
         images = batch['image']
         wvs = batch['wvs']
         modality = batch.get('modality', 'S2RGB')
-
         # 1. Forward Pass
         with torch.no_grad():
             reconstruction = pl_module(
