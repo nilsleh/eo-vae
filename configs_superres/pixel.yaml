@@ -1,0 +1,53 @@
+
+experiment:
+  experiment_name: "pixel-sr"
+  exp_dir: "results/exps/eo-vae/sr"
+
+wandb:
+  project: eo-vae-sr
+  entity: nleh
+  mode: online
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 500
+  accelerator: "gpu"
+  limit_val_batches: 10
+  # limit_train_batches: 2000 # choose 1000 iterable dataset batches to have control over params
+  # strategy: ddp_find_unused_parameters_true
+  devices: [3]
+  log_every_n_steps: 20
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 4
+
+
+lightning_module:
+  _target_: eo_vae.models.super_res.DiffusionSuperRes
+  optimizer:
+    _target_: torch.optim.Adam
+    _partial_: true
+    lr: 3e-4
+  denoiser:
+    _target_: azula.denoise.SimpleDenoiser
+    backbone:
+      _target_: azula.nn.unet.UNet
+      in_channels: 4
+      out_channels: 4
+      cond_channels: 4
+      hid_channels: [256, 128, 64]
+      hid_blocks: [3, 3, 3]
+      spatial: 2 # 2D convs
+    schedule:
+      _target_: azula.noise.VPSchedule
+      alpha_min: 0.001
+      sigma_min: 0.001
+  sampler:
+    _target_: azula.sample.DDIMSampler
+    _partial_: true
+    steps: 50
+
+datamodule:
+  _target_: eo_vae.datasets.sen2naip.Sen2NaipCrossSensorDataModule
+  root: /mnt/SSD2/nils/datasets/sen2naip/cross-sensor/cross-sensor
+  batch_size: 2
+  num_workers: 2

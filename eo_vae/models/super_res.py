@@ -63,7 +63,6 @@ class DiffusionSuperRes(LightningModule):
             the training loss
         """
         batch_size = batch['image_hr'].shape[0]
-
         # sample random ode continous time interval [0, 1]
         t = torch.rand(batch_size, device=self.device)
         # azula computes loss internally, expecting x and t, with everything else being kwargs

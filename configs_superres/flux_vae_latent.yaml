@@ -1,0 +1,80 @@
+
+experiment:
+  experiment_name: "flux-vae-sr"
+  exp_dir: "results/exps/eo-vae/sr"
+
+wandb:
+  project: eo-vae-sr
+  entity: nleh
+  mode: online
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 500
+  accelerator: "gpu"
+  # limit_val_batches: 10
+  # limit_train_batches: 2000 # choose 1000 iterable dataset batches to have control over params
+  # strategy: ddp_find_unused_parameters_true
+  devices: [7]
+  log_every_n_steps: 20
+  gradient_clip_val: 1.0
+
+
+lightning_module:
+  _target_: eo_vae.models.super_res.DiffusionSuperRes
+  optimizer:
+    _target_: torch.optim.Adam
+    _partial_: true
+    lr: 3e-4
+  denoiser:
+    _target_: azula.denoise.SimpleDenoiser
+    backbone:
+      _target_: azula.nn.unet.UNet
+      in_channels: 32
+      out_channels: 32
+      cond_channels: 32
+      hid_channels: [256, 128, 64]
+      hid_blocks: [3, 3, 3]
+      spatial: 2 # 2D convs
+    schedule:
+      _target_: azula.noise.VPSchedule
+      alpha_min: 0.001
+      sigma_min: 0.001
+  sampler:
+    _target_: azula.sample.DDIMSampler
+    _partial_: true
+    steps: 50
+
+# autoencoder:
+#   encoder:
+#     _target_: eo_vae.models.Encoder
+#     z_channels: 32
+#     resolution: 256
+#     in_channels: 3
+#     ch: 128
+#     ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+#     num_res_blocks: 2
+#     use_dynamic_ops: True
+#     dynamic_conv_kwargs:
+#       num_layers: 4
+#       wv_planes: 256
+
+#   decoder:
+#     _target_: eo_vae.models.Decoder
+#     z_channels: 32
+#     resolution: 256
+#     out_ch: 3
+#     ch: 128
+#     ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
+#     num_res_blocks: 2
+#     use_dynamic_ops: True
+#     dynamic_conv_kwargs:
+#       num_layers: 4
+#       wv_planes: 256
+
+datamodule:
+  _target_: eo_vae.datasets.sen2naip.Sen2NaipLatentCrossSensorDataModule
+  root: /mnt/SSD2/nils/datasets/sen2naip/cross-sensor/eo_vae
+  batch_size: 16
+  num_workers: 2
+  latent_model: "flux-vae"
