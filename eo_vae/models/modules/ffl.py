@@ -12,7 +12,6 @@ if IS_HIGH_VERSION:
 
 
 import torch
-import torch.nn as nn
 
 
 class FocalFrequencyLoss(nn.Module):

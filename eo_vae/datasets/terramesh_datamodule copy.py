@@ -1,11 +1,12 @@
 import os
 import random
+
 import numpy as np
 import torch
 from lightning import LightningDataModule
 from omegaconf import ListConfig
-from torch.utils.data import DataLoader
 from terramesh import build_terramesh_dataset
+from torch.utils.data import DataLoader
 
 # Wavelength definitions (unchanged)
 WAVELENGTHS = {
@@ -131,43 +132,75 @@ NORM_STATS = {
 }
 
 import torch.nn as nn
+
+
 class Sentine2L2AlNorm(nn.Module):
     def __init__(self):
         super().__init__()
         # Use the "Clipped" stats (Max=10000) to prioritize land contrast
-        self.register_buffer('mean', torch.tensor([
-            2435.8665, 2543.3806, 2767.4976, 2911.2197, 3253.6277, 3837.3064,
-            4048.8118, 4138.8438, 4197.8535, 4216.5630, 3484.7454, 2912.8987
-        ]).view(12, 1, 1))
-        
-        self.register_buffer('std', torch.tensor([
-            2078.0635, 2077.7659, 1985.1591, 2070.0999, 2001.9419, 1821.0082,
-            1768.0741, 1792.8589, 1710.2782, 1711.2448, 1433.0996, 1341.4229
-        ]).view(12, 1, 1))
+        self.register_buffer(
+            'mean',
+            torch.tensor(
+                [
+                    2435.8665,
+                    2543.3806,
+                    2767.4976,
+                    2911.2197,
+                    3253.6277,
+                    3837.3064,
+                    4048.8118,
+                    4138.8438,
+                    4197.8535,
+                    4216.5630,
+                    3484.7454,
+                    2912.8987,
+                ]
+            ).view(12, 1, 1),
+        )
+
+        self.register_buffer(
+            'std',
+            torch.tensor(
+                [
+                    2078.0635,
+                    2077.7659,
+                    1985.1591,
+                    2070.0999,
+                    2001.9419,
+                    1821.0082,
+                    1768.0741,
+                    1792.8589,
+                    1710.2782,
+                    1711.2448,
+                    1433.0996,
+                    1341.4229,
+                ]
+            ).view(12, 1, 1),
+        )
 
     def forward(self, x):
         # 1. Harmonize: Fix the -1000 offset seen in histogram
         x = x + 1000.0
-        
+
         # 2. Mask NoData (exact 0 after shift)
-        nodata_mask = (x <= 0)
-        
-        # 3. Clip Saturation: Cut off the "Cloud Spike" at 15000 
+        nodata_mask = x <= 0
+
+        # 3. Clip Saturation: Cut off the "Cloud Spike" at 15000
         # to preserve contrast in the "Land Hump" (0-4000)
         x = torch.clamp(x, min=0.0, max=10000.0)
-        
+
         # 4. Standardize
         x = (x - self.mean) / self.std
-        
+
         # 5. Fill NoData
         x = x.masked_fill(nodata_mask, 0.0)
         return x
 
+
 def apply_batch_augmentations(images: torch.Tensor) -> torch.Tensor:
-    """
-    Applies random geometric augmentations (D4 Symmetry Group) to a batch of EO images.
+    """Applies random geometric augmentations (D4 Symmetry Group) to a batch of EO images.
     Input: (B, C, H, W)
-    
+
     Includes:
     - Random Horizontal Flip
     - Random Vertical Flip
@@ -186,8 +219,9 @@ def apply_batch_augmentations(images: torch.Tensor) -> torch.Tensor:
     k = random.randint(0, 3)
     if k > 0:
         images = torch.rot90(images, k, dims=[-2, -1])
-        
+
     return images
+
 
 def normalize_image(
     image: torch.Tensor, modality: str, method='zscore'
@@ -242,7 +276,11 @@ def unnormalize_image(
 
 
 def single_modality_collate_fn(
-    modalities, normalize=True, norm_method='zscore', target_size=(224, 224), mode="train"
+    modalities,
+    normalize=True,
+    norm_method='zscore',
+    target_size=(224, 224),
+    mode='train',
 ):
     """Collate function that randomly selects ONE modality per batch.
 
@@ -310,7 +348,7 @@ def single_modality_collate_fn(
 
 
 def deterministic_modality_collate_fn(
-    modality, normalize=True, norm_method='zscore', target_size=(224, 224), mode="train"
+    modality, normalize=True, norm_method='zscore', target_size=(224, 224), mode='train'
 ):
     """Collate function that always uses the SAME modality.
 
@@ -402,7 +440,7 @@ class TerraMeshDataModule(LightningDataModule):
                 normalize=normalize,
                 norm_method=norm_method,
                 target_size=target_size,
-                mode="train"
+                mode='train',
             )
         else:
             self.train_collate_fn = deterministic_modality_collate_fn(
@@ -410,7 +448,7 @@ class TerraMeshDataModule(LightningDataModule):
                 normalize=normalize,
                 norm_method=norm_method,
                 target_size=target_size,
-                mode="train"
+                mode='train',
             )
 
         self.val_collate_fn = deterministic_modality_collate_fn(
@@ -418,7 +456,7 @@ class TerraMeshDataModule(LightningDataModule):
             normalize=normalize,
             norm_method=norm_method,
             target_size=target_size,
-            mode="eval"
+            mode='eval',
         )
 
     def setup(self, stage=None):
@@ -468,18 +506,15 @@ class TerraMeshDataModule(LightningDataModule):
             split='train',
             batch_size=self.batch_size,
             shuffle=True,
-            
             # 1. FIX: Disable the duplicate data stream
             # The code normally expects two data sources. Since you only have MajorTom,
             # we set probabilities to [100%, 0%] to ignore the second empty/duplicate pipeline.
-            probs=[1.0, 0.0], 
-            
+            probs=[1.0, 0.0],
             # 2. FIX: Increase shuffle buffer
             # Since the buffer stores compressed Zarr files, we can increase this.
             # 500 samples * 4 workers = mixes ~2000 samples globally.
             # This covers ~20% of a shard, significantly reducing the "fluctuation" bumps.
-            shardshuffle=1000, 
-            
+            shardshuffle=1000,
             **self.kwargs,
         )
 
@@ -534,26 +569,25 @@ class TerraMeshDataModule(LightningDataModule):
         )
 
 
-
 import torch
 import torch.nn as nn
 
+
 class ClippedRunningStats(nn.Module):
     def __init__(self, shape, dims, shift_offset=1000.0, saturation_threshold=10000.0):
-        """
-        Computes stats for Shifted Sentinel-2 Data (Baseline 04.00).
-        
+        """Computes stats for Shifted Sentinel-2 Data (Baseline 04.00).
+
         Logic:
           1. Shifts input by +1000.
           2. Treats exact 0 as NoData.
           3. Clips saturation at 10000.
         """
         super().__init__()
-        
+
         # Handle shape argument (int or tuple)
         if isinstance(shape, (tuple, list)):
             self.num_channels = shape[0]
-            self.shape_tuple = shape 
+            self.shape_tuple = shape
         else:
             self.num_channels = shape
             self.shape_tuple = (shape,)
@@ -577,46 +611,48 @@ class ClippedRunningStats(nn.Module):
             # -1000 (NoData) becomes 0.
             # -800 (Dark Pixel) becomes 200.
             x_shifted = x + self.shift_offset
-            
+
             # --- STEP 2: DEFINE VALID DATA ---
             # We treat 0 as the 'NoData' marker.
             # Real data (even dark shadows) is typically > 0 (e.g. 10 or 20).
-            valid_mask = (x_shifted > 0)
-            
+            valid_mask = x_shifted > 0
+
             # --- STEP 3: CLIP SATURATION ---
             # We clamp clouds to 10000 to prevent outliers from skewing the mean.
             # We apply min=0 to ensure no lingering negatives mess up the math.
             x_fixed = torch.clamp(x_shifted, min=0.0, max=self.saturation_threshold)
-            
+
             # --- STEP 4: WELFORD UPDATE (Standard) ---
-            
+
             # Permute dimensions to isolate channels
             all_dims = list(range(x.ndim))
-            channel_dim = [d for d in all_dims if d not in self.dims] 
+            channel_dim = [d for d in all_dims if d not in self.dims]
             permute_order = channel_dim + self.dims
-            
+
             x_flat = x_fixed.permute(permute_order).reshape(self.num_channels, -1)
             mask_flat = valid_mask.permute(permute_order).reshape(self.num_channels, -1)
-            
+
             batch_mean = torch.zeros_like(self.mean)
             batch_var = torch.zeros_like(self.var)
             batch_count = torch.zeros_like(self.count)
-            
+
             for c in range(self.num_channels):
                 # Only select VALID pixels
                 valid_pixels = x_flat[c][mask_flat[c]]
                 n = valid_pixels.numel()
-                
+
                 if n > 0:
                     batch_mean[c] = valid_pixels.mean()
                     batch_var[c] = valid_pixels.var(unbiased=False) if n > 1 else 0.0
                     batch_count[c] = n
-                    
+
                     # Update Min/Max
                     current_min = valid_pixels.min()
                     current_max = valid_pixels.max()
-                    if current_min < self.min[c]: self.min[c] = current_min
-                    if current_max > self.max[c]: self.max[c] = current_max
+                    if current_min < self.min[c]:
+                        self.min[c] = current_min
+                    if current_max > self.max[c]:
+                        self.max[c] = current_max
 
             # Merge with running stats
             delta = batch_mean - self.mean
@@ -627,8 +663,8 @@ class ClippedRunningStats(nn.Module):
             m_a = self.var * self.count
             m_b = batch_var * batch_count
             M2 = m_a + m_b + delta**2 * self.count * batch_count / denom
-            
-            update_locs = (batch_count > 0)
+
+            update_locs = batch_count > 0
             self.mean[update_locs] = new_mean[update_locs]
             self.var[update_locs] = (M2 / denom)[update_locs]
             self.std[update_locs] = torch.sqrt(self.var[update_locs] + 1e-8)
@@ -639,16 +675,14 @@ class ClippedRunningStats(nn.Module):
         return x
 
 
-
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import numpy as np
+
 
 class StreamingHistogram(nn.Module):
     def __init__(self, num_channels, min_val=-1200, max_val=1000, bins=2200):
-        """
-        Accumulates histogram counts for a specific value range.
+        """Accumulates histogram counts for a specific value range.
         Default range [-1200, 1000] with 2200 bins gives us ~1 unit precision per bin.
         """
         super().__init__()
@@ -656,90 +690,66 @@ class StreamingHistogram(nn.Module):
         self.min_val = min_val
         self.max_val = max_val
         self.bins = bins
-        
+
         # Store counts: Shape (Channels, Bins)
         self.register_buffer('hist_counts', torch.zeros(num_channels, bins))
-        
+
         # Create bin edges for plotting later
-        self.bin_edges = torch.linspace(min_val, max_val, steps=bins+1)
+        self.bin_edges = torch.linspace(min_val, max_val, steps=bins + 1)
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
     def update(self, x):
-        """
-        Updates the histogram with a new batch of data.
-        """
+        """Updates the histogram with a new batch of data."""
         with torch.no_grad():
             # Flatten: (B, C, H, W) -> (C, -1)
             if x.ndim == 4:
                 x_flat = x.permute(1, 0, 2, 3).reshape(self.num_channels, -1)
             else:
                 x_flat = x.reshape(self.num_channels, -1)
-            
+
             for c in range(self.num_channels):
                 # torch.histc only works on 1D tensors and doesn't do batching well
                 # So we loop over channels (fast enough since C is small, e.g. 12)
                 batch_hist = torch.histc(
-                    x_flat[c].float(), 
-                    bins=self.bins, 
-                    min=self.min_val, 
-                    max=self.max_val
+                    x_flat[c].float(),
+                    bins=self.bins,
+                    min=self.min_val,
+                    max=self.max_val,
                 )
                 self.hist_counts[c] += batch_hist
 
     def plot(self, channel_names=None):
-        """
-        Plots the accumulated histograms.
-        """
+        """Plots the accumulated histograms."""
         counts_np = self.hist_counts.cpu().numpy()
         centers_np = self.bin_centers.cpu().numpy()
-        
+
         plt.figure(figsize=(15, 8))
-        
+
         for c in range(self.num_channels):
-            label = channel_names[c] if channel_names else f"Ch {c}"
-            
+            label = channel_names[c] if channel_names else f'Ch {c}'
+
             # Use log scale for Y because NoData spikes are usually huge
             # compared to normal data
             plt.plot(centers_np, counts_np[c], label=label, alpha=0.7)
-            
+
         plt.yscale('log')
         plt.title("Data Distribution: The 'Problem Zone' (Negative Values)")
-        plt.xlabel("Pixel Value")
-        plt.ylabel("Count (Log Scale)")
-        plt.grid(True, which="both", ls="-", alpha=0.2)
+        plt.xlabel('Pixel Value')
+        plt.ylabel('Count (Log Scale)')
+        plt.grid(True, which='both', ls='-', alpha=0.2)
         plt.legend()
-        
+
         # Draw lines to help analysis
-        plt.axvline(x=-100, color='r', linestyle='--', alpha=0.5, label='Expected NoData (-999)')
+        plt.axvline(
+            x=-100, color='r', linestyle='--', alpha=0.5, label='Expected NoData (-999)'
+        )
         plt.axvline(x=0, color='k', linestyle='-', alpha=0.5, label='Zero')
-        
-        plt.savefig("streaming_histogram.png")
+
+        plt.savefig('streaming_histogram.png')
         plt.show()
 
-if __name__ == "__main__": 
-    # eo_latent_dm = Sen2NaipLatentCrossSensorDataModule(
-    #     root= "/mnt/SSD2/nils/datasets/sen2naip/cross-sensor/flux_vae_01",
-    #     batch_size=16,
-    #     num_workers=4,
-    # )
-    # eo_latent_dm.setup('fit')
 
-    # latent_stats = RunningStatsButFast((32,), dims=[0, 2, 3])
-
-    # train_loader = eo_latent_dm.train_dataloader()
-
-
-    # for batch in train_loader:
-    #     latent_stats(batch['image_hr'])
-
-    # print('Latent Stats:')
-    # print('Mean:', latent_stats.mean)
-    # print('Std:', latent_stats.std)
-    # print('Min:', latent_stats.min)
-    # print('Max:', latent_stats.max)
-
-
-    from sen2naip import RunningStatsButFast
+if __name__ == '__main__':
     from tqdm import tqdm
 
     dm = TerraMeshDataModule(
@@ -747,8 +757,8 @@ if __name__ == "__main__":
         modalities=['S2L2A'],
         batch_size=8,
         num_workers=4,
-        norm_method="zscore",
-        normalize=False
+        norm_method='zscore',
+        normalize=False,
     )
 
     dm.setup('fit')
@@ -757,11 +767,17 @@ if __name__ == "__main__":
     out = nex(iter(train_loader))
 
     # L2A stats
-    stats = ClippedRunningStats((12,), dims=[0, 2, 3], shift_offset=1000.0, saturation_threshold=10000.0)
+    stats = ClippedRunningStats(
+        (12,), dims=[0, 2, 3], shift_offset=1000.0, saturation_threshold=10000.0
+    )
     # L1C stats
-    stats = ClippedRunningStats((13,), dims=[0, 2, 3], shift_offset=0.0, saturation_threshold=12000.0)
+    stats = ClippedRunningStats(
+        (13,), dims=[0, 2, 3], shift_offset=0.0, saturation_threshold=12000.0
+    )
 
-    hist_computer = StreamingHistogram(num_channels=2, min_val=-100, max_val=100, bins=500)
+    hist_computer = StreamingHistogram(
+        num_channels=2, min_val=-100, max_val=100, bins=500
+    )
 
     max_num = 300
     i = 0
@@ -771,14 +787,6 @@ if __name__ == "__main__":
             break
         i += 1
     hist_computer.plot()
-    # max_num = 400
-    # i = 0
-    # for batch in tqdm(train_loader):
-    #     stats(batch['image'])
-    #     if i >= max_num:
-    #         break
-    #     i += 1
-        
 
     print('Computed Stats:')
     print('Mean:', stats.mean)

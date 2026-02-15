@@ -17,7 +17,6 @@ OmegaConf.register_new_resolver('eval', eval)
 
 
 def create_experiment_dir(config: dict[str, Any]) -> str:
-    # ... (Same as your original code) ...
     os.makedirs(config['experiment']['exp_dir'], exist_ok=True)
     exp_dir_name = (
         f'{config["experiment"]["experiment_name"]}'
@@ -50,9 +49,6 @@ def load_vae_weights_for_refinement(model, ckpt_path):
             continue
         if k in model_state and model_state[k].shape == v.shape:
             filtered_state_dict[k] = v
-        else:
-            # Optional: Print mismatch info if needed
-            pass
 
     keys = model.load_state_dict(filtered_state_dict, strict=False)
 

@@ -1,33 +1,34 @@
 import argparse
-import os
 import json
-import torch
+import os
+
 import numpy as np
-from tqdm import tqdm
-from omegaconf import OmegaConf
-from hydra.utils import instantiate
+import torch
 from diffusers import AutoencoderKL
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 from torchmetrics.functional import (
     mean_squared_error,
     peak_signal_noise_ratio,
-    structural_similarity_index_measure,
     spectral_angle_mapper,
+    structural_similarity_index_measure,
 )
+from tqdm import tqdm
+
 # from torchmetrics.image import (
-    
 # )
-from eo_vae.models.autoencoder_flux import FluxAutoencoderKL
 
 # Stats from encode_latents.py
 HR_MEAN = torch.tensor([125.1176, 121.9117, 100.0240, 143.8500]).view(1, 4, 1, 1)
 HR_STD = torch.tensor([39.8066, 30.3501, 28.9109, 28.8952]).view(1, 4, 1, 1)
+
 
 def batch_denorm_rgb(img, img_mean, img_std, max_val):
     """Batch denormalization to RGB [0,1] for metrics."""
     # img: [B, C, H, W]
     if img.shape[1] == 4:
         img = img[:, :3, :, :]
-    
+
         img_mean = img_mean.to(img.device, img.dtype)[:, :3, :, :]
         img_std = img_std.to(img.device, img.dtype)[:, :3, :, :]
     elif img.shape[1] == 3:
@@ -38,7 +39,7 @@ def batch_denorm_rgb(img, img_mean, img_std, max_val):
         img_std = img_std.to(img.device, img.dtype)
 
     img = img * img_std + img_mean
-    
+
     # Scale
     img = img / max_val
     return torch.clamp(img, 0, 1)
@@ -60,8 +61,7 @@ def denormalize_latents(latents, dm, device='cpu'):
 
 
 def decode_latents(model, latents, wvs, conf):
-    """
-    Smart decoding based on config settings.
+    """Smart decoding based on config settings.
     Handles 'raw' vs 'spatial_norm' decoding paths.
     """
     use_spatial_decode = os.path.basename(conf.datamodule.root) == 'eo-vae-spatial-norm'
@@ -100,13 +100,13 @@ def load_eo_vae(conf, device):
 def infer_model_type(name, conf):
     """Infer model type from name or config."""
     name_lower = name.lower()
-    if "pixel" in name_lower:
+    if 'pixel' in name_lower:
         return 'pixel'
-    elif "eo-vae" in name_lower or "eovae" in name_lower:
+    elif 'eo-vae' in name_lower or 'eovae' in name_lower:
         return 'eo-vae'
-    elif "flux" in name_lower:
+    elif 'flux' in name_lower:
         return 'flux-vae'
-    
+
     # Fallback to config
     latent_model = conf.datamodule.get('latent_model', 'pixel')
     if 'eo-vae' in str(latent_model).lower():
@@ -114,7 +114,6 @@ def infer_model_type(name, conf):
     elif 'flux' in str(latent_model).lower():
         return 'flux-vae'
     return 'pixel'
-
 
 
 def process_model(model_name, config_path, ckpt_path, device, args):
@@ -140,12 +139,12 @@ def process_model(model_name, config_path, ckpt_path, device, args):
     # 3. Load Decoder if needed
     decoder = None
     wvs = torch.tensor([0.665, 0.56, 0.49, 0.842], device=device)
-    
+
     if model_type == 'eo-vae':
         decoder = load_eo_vae(conf, device)
     elif model_type == 'flux-vae':
         decoder = load_flux_vae(device)
-    
+
     # 4. Metrics
     metrics = {'RMSE': [], 'PSNR': [], 'SSIM': [], 'SAM': []}
 
@@ -156,7 +155,7 @@ def process_model(model_name, config_path, ckpt_path, device, args):
             # Inputs
             lr = batch['image_lr'].to(device)
             hr = batch['image_hr'].to(device)
-            
+
             # Prediction
             if model_type == 'pixel':
                 # Pixel model prediction
@@ -173,18 +172,20 @@ def process_model(model_name, config_path, ckpt_path, device, args):
                 # 3. Decode to pixels
                 if model_type == 'eo-vae':
                     pred = decode_latents(decoder, pred_latent_raw, wvs, conf)
-                else: # flux-vae
+                else:  # flux-vae
                     pred = decoder.decode(pred_latent_raw).sample
 
             # --- Prepare for Metrics ---
             # Denormalize both GT and Pred to RGB [0, 1] using fixed stats
             # This matches the visualization check which is deemed "correct"
-            
+
             pred_eval = batch_denorm_rgb(pred, HR_MEAN, HR_STD, 255.0)
             # if model_type == "pixel":
             #     gt_eval = batch_denorm_rgb(batch["image_hr"], HR_MEAN, HR_STD, 255.0).to(device)
             # else:
-            gt_eval = batch_denorm_rgb(batch["orig_image_hr"], HR_MEAN, HR_STD, 255.0).to(device)
+            gt_eval = batch_denorm_rgb(
+                batch['orig_image_hr'], HR_MEAN, HR_STD, 255.0
+            ).to(device)
 
             # Ensure contiguous memory for torch metrics
             pred_eval = pred_eval.contiguous()
@@ -213,7 +214,6 @@ def process_model(model_name, config_path, ckpt_path, device, args):
     print(f'Results for {model_name}: {final_results}')
 
     return final_results
-
 
 
 def main():

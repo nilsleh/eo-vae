@@ -1,8 +1,9 @@
-import torch
-import numpy as np
-from tqdm import tqdm
-from eo_vae.datasets.terramesh_datamodule import TerraMeshDataModule
 import json
+
+import torch
+from tqdm import tqdm
+
+from eo_vae.datasets.terramesh_datamodule import TerraMeshDataModule
 
 
 class RunningStatsButFast(torch.nn.Module):

@@ -6,14 +6,15 @@ build-backend = "setuptools.build_meta"
 name = "EO-VAE"
 version = "0.1.0"
 description = "EO-VAE."
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Nils Lehmann", email = "n.lehmann@tum.de" },
-    { name = "Zhitong Xiong", email = "xiongzhitong@gmail.com" }
 ]
 
 maintainers = [
     { name = "Nils Lehmann", email = "n.lehmann@tum.de" },
-    { name = "Zhitong Xiong", email = "xiongzhitong@gmail.com" }
 ]
 
 

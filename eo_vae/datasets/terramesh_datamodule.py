@@ -1,11 +1,13 @@
 import os
 import random
+
 import numpy as np
 import torch
 import torch.nn as nn
 from lightning import LightningDataModule
 from omegaconf import ListConfig
 from torch.utils.data import DataLoader
+
 from .terramesh import build_terramesh_dataset
 
 # =============================================================================
@@ -17,12 +19,33 @@ WAVELENGTHS = {
     'S2RGB': [0.665, 0.56, 0.49],
     'S1RTC': [5.4, 5.6],
     'S2L2A': [
-        0.443, 0.490, 0.560, 0.665, 0.705, 0.740,
-        0.783, 0.842, 0.865, 1.610, 2.190, 0.945,
+        0.443,
+        0.490,
+        0.560,
+        0.665,
+        0.705,
+        0.740,
+        0.783,
+        0.842,
+        0.865,
+        1.610,
+        2.190,
+        0.945,
     ],
     'S2L1C': [
-        0.443, 0.490, 0.560, 0.665, 0.705, 0.740,
-        0.783, 0.842, 0.865, 0.945, 1.375, 1.610, 2.190,
+        0.443,
+        0.490,
+        0.560,
+        0.665,
+        0.705,
+        0.740,
+        0.783,
+        0.842,
+        0.865,
+        0.945,
+        1.375,
+        1.610,
+        2.190,
     ],
 }
 
@@ -30,36 +53,69 @@ WAVELENGTHS = {
 NORM_STATS_LEGACY = {
     'S2L2A': {
         'mean': [
-            1375.648, 1489.600, 1709.087, 1831.752, 2186.075, 2794.358,
-            3008.528, 3096.780, 3155.180, 3169.651, 2415.761, 1838.622,
+            1375.648,
+            1489.600,
+            1709.087,
+            1831.752,
+            2186.075,
+            2794.358,
+            3008.528,
+            3096.780,
+            3155.180,
+            3169.651,
+            2415.761,
+            1838.622,
         ],
         'std': [
-            2101.107, 2138.673, 2033.628, 2118.186, 2061.646, 1869.234,
-            1801.386, 1841.173, 1734.404, 1751.174, 1375.131, 1284.165,
+            2101.107,
+            2138.673,
+            2033.628,
+            2118.186,
+            2061.646,
+            1869.234,
+            1801.386,
+            1841.173,
+            1734.404,
+            1751.174,
+            1375.131,
+            1284.165,
         ],
     },
-    'S1RTC': {
-        'mean': [-10.793, -17.198],
-        'std': [4.278, 4.346],
-    },
+    'S1RTC': {'mean': [-10.793, -17.198], 'std': [4.278, 4.346]},
     'S2L1C': {
         'mean': [
-            2475.625, 2260.839, 2143.561, 2230.225, 2445.427, 2992.950,
-            3257.843, 3171.695, 3440.958, 1567.433, 561.076, 2562.809, 1924.178,
+            2475.625,
+            2260.839,
+            2143.561,
+            2230.225,
+            2445.427,
+            2992.950,
+            3257.843,
+            3171.695,
+            3440.958,
+            1567.433,
+            561.076,
+            2562.809,
+            1924.178,
         ],
         'std': [
-            1761.905, 1804.267, 1661.263, 1932.020, 1918.007, 1812.421,
-            1795.179, 1734.280, 1780.039, 1082.531, 512.077, 1350.580, 1177.511,
+            1761.905,
+            1804.267,
+            1661.263,
+            1932.020,
+            1918.007,
+            1812.421,
+            1795.179,
+            1734.280,
+            1780.039,
+            1082.531,
+            512.077,
+            1350.580,
+            1177.511,
         ],
     },
-    'S2RGB': {
-        'mean': [110.349, 99.507, 75.843],
-        'std': [69.905, 53.708, 53.378],
-    },
-    'DEM': {
-        'mean': [651.663],
-        'std': [928.168],
-    },
+    'S2RGB': {'mean': [110.349, 99.507, 75.843], 'std': [69.905, 53.708, 53.378]},
+    'DEM': {'mean': [651.663], 'std': [928.168]},
 }
 
 # Alias for backward compatibility
@@ -70,114 +126,170 @@ NORM_STATS = NORM_STATS_LEGACY
 # Custom Normalization Classes (New Scheme) - Time-Aware
 # =============================================================================
 
+
 class Sentinel2L2ANorm(nn.Module):
-    """
-    Custom normalization for Sentinel-2 L2A with clipping.
-    
+    """Custom normalization for Sentinel-2 L2A with clipping.
+
     Processing:
       1. Clip to [0, 10000]
       2. Apply z-score normalization with custom statistics
-    
+
     Note: The +1000 time-aware shift for post-baseline images should be applied
     at the dataset/transform level for efficiency, not here.
     """
-    
+
     def __init__(self):
         super().__init__()
         # Updated statistics computed with time-aware harmonization and 10k clipping
-        self.register_buffer('mean', torch.tensor([
-            1718.9949, 1825.5669, 2043.5834, 2175.4543, 2522.9522, 3114.2216,
-            3323.3469, 3417.3660, 3470.9655, 3489.4869, 2725.9735, 2152.0551
-        ]).view(12, 1, 1))
-        
-        self.register_buffer('std', torch.tensor([
-            2126.3409, 2140.1035, 2044.6618, 2125.3351, 2065.3251, 1874.4652,
-            1808.0426, 1839.0210, 1737.9521, 1738.5136, 1456.5919, 1365.1743
-        ]).view(12, 1, 1))
+        self.register_buffer(
+            'mean',
+            torch.tensor(
+                [
+                    1718.9949,
+                    1825.5669,
+                    2043.5834,
+                    2175.4543,
+                    2522.9522,
+                    3114.2216,
+                    3323.3469,
+                    3417.3660,
+                    3470.9655,
+                    3489.4869,
+                    2725.9735,
+                    2152.0551,
+                ]
+            ).view(12, 1, 1),
+        )
+
+        self.register_buffer(
+            'std',
+            torch.tensor(
+                [
+                    2126.3409,
+                    2140.1035,
+                    2044.6618,
+                    2125.3351,
+                    2065.3251,
+                    1874.4652,
+                    1808.0426,
+                    1839.0210,
+                    1737.9521,
+                    1738.5136,
+                    1456.5919,
+                    1365.1743,
+                ]
+            ).view(12, 1, 1),
+        )
 
     def forward(self, x: torch.Tensor, timestamps: torch.Tensor = None) -> torch.Tensor:
-        """
-        Normalize Sentinel-2 L2A images.
-        
+        """Normalize Sentinel-2 L2A images.
+
         Args:
             x: Image tensor (B, C, H, W) - should already have +1000 shift applied if needed
             timestamps: Ignored - shift should be done at dataset level
-        
+
         Returns:
             Normalized tensor (B, C, H, W)
         """
         # 1. Clip to [0, 10000]
         x = torch.clamp(x, min=0.0, max=10000.0)
-        
+
         # 2. Standardize (Z-Score)
         x = (x - self.mean) / self.std
-        
+
         return x
 
 
 class Sentinel2L1CNorm(nn.Module):
-    """
-    Custom normalization for Sentinel-2 L1C with clipping.
-    
+    """Custom normalization for Sentinel-2 L1C with clipping.
+
     Processing:
       1. Clip to [0, 10000]
       2. Apply z-score normalization with custom statistics
-    
+
     Note: L1C (Top-of-Atmosphere) was not affected by the baseline change.
     """
-    
+
     def __init__(self):
         super().__init__()
         # Computed L1C Stats (Hardcoded for reproducibility)
         # 13 Channels: B1, B2, B3, B4, B5, B6, B7, B8, B8A, B9, B10, B11, B12
-        self.register_buffer('mean', torch.tensor([
-            2424.2556, 2207.7019, 2098.2302, 2167.1584, 2382.3115, 2938.8499,
-            3204.8447, 3126.6599, 3389.0706, 1580.1287,  572.5726, 2552.1208,
-            1917.9390
-        ]).view(13, 1, 1))
-        
-        self.register_buffer('std', torch.tensor([
-            1700.3824, 1731.5450, 1610.9904, 1833.5536, 1808.5067, 1694.4427,
-            1678.2327, 1625.7446, 1659.3112, 1093.5255,  515.6395, 1300.8892,
-            1151.6169
-        ]).view(13, 1, 1))
+        self.register_buffer(
+            'mean',
+            torch.tensor(
+                [
+                    2424.2556,
+                    2207.7019,
+                    2098.2302,
+                    2167.1584,
+                    2382.3115,
+                    2938.8499,
+                    3204.8447,
+                    3126.6599,
+                    3389.0706,
+                    1580.1287,
+                    572.5726,
+                    2552.1208,
+                    1917.9390,
+                ]
+            ).view(13, 1, 1),
+        )
+
+        self.register_buffer(
+            'std',
+            torch.tensor(
+                [
+                    1700.3824,
+                    1731.5450,
+                    1610.9904,
+                    1833.5536,
+                    1808.5067,
+                    1694.4427,
+                    1678.2327,
+                    1625.7446,
+                    1659.3112,
+                    1093.5255,
+                    515.6395,
+                    1300.8892,
+                    1151.6169,
+                ]
+            ).view(13, 1, 1),
+        )
 
     def forward(self, x: torch.Tensor, timestamps: torch.Tensor = None) -> torch.Tensor:
-        """
-        Normalize Sentinel-2 L1C images.
-        
+        """Normalize Sentinel-2 L1C images.
+
         Args:
             x: Image tensor (B, C, H, W)
             timestamps: Ignored - kept for API consistency
-        
+
         Returns:
             Normalized tensor (B, C, H, W)
         """
         # 1. Clip to [0, 10000]
         x = torch.clamp(x, min=0.0, max=10000.0)
-        
+
         # 2. Standardize (Z-Score)
         x = (x - self.mean) / self.std
-        
+
         return x
 
 
 class LegacyZScoreNorm(nn.Module):
     """Legacy z-score normalization using original TerraMesh stats."""
-    
+
     def __init__(self, modality: str):
         super().__init__()
         if modality not in NORM_STATS_LEGACY:
             raise ValueError(f'Unknown modality {modality} for normalization.')
-        
+
         stats = NORM_STATS_LEGACY[modality]
         self.register_buffer('mean', torch.tensor(stats['mean']).view(-1, 1, 1))
         self.register_buffer('std', torch.tensor(stats['std']).view(-1, 1, 1))
-    
+
     def forward(self, x: torch.Tensor, timestamps: torch.Tensor = None) -> torch.Tensor:
-        """
-        Apply legacy z-score normalization.
-        
+        """Apply legacy z-score normalization.
+
         Args:
             x: Image tensor (B, C, H, W)
             timestamps: Ignored - kept for API consistency
@@ -189,24 +301,24 @@ class LegacyZScoreNorm(nn.Module):
 # Normalizer Factory
 # =============================================================================
 
+
 class NormalizerFactory:
     """Factory for creating normalizers based on scheme and modality."""
-    
+
     # Mapping of (scheme, modality) -> normalizer class
     CUSTOM_NORMALIZERS = {
         ('custom', 'S2L2A'): Sentinel2L2ANorm,
         ('custom', 'S2L1C'): Sentinel2L1CNorm,
     }
-    
+
     @classmethod
     def create(cls, modality: str, scheme: str = 'legacy') -> nn.Module:
-        """
-        Create a normalizer for the given modality and scheme.
-        
+        """Create a normalizer for the given modality and scheme.
+
         Args:
             modality: Modality name (e.g., 'S2L2A', 'S2L1C', 'S1RTC')
             scheme: Normalization scheme - 'legacy' (original z-score) or 'custom' (new scheme)
-        
+
         Returns:
             nn.Module that normalizes tensors
         """
@@ -215,12 +327,12 @@ class NormalizerFactory:
         else:
             # Fall back to legacy z-score for all other cases
             return LegacyZScoreNorm(modality)
-    
+
     @classmethod
     def get_available_schemes(cls) -> list:
         """Return list of available normalization schemes."""
         return ['legacy', 'custom']
-    
+
     @classmethod
     def get_custom_modalities(cls) -> list:
         """Return list of modalities with custom normalization available."""
@@ -231,11 +343,11 @@ class NormalizerFactory:
 # Augmentation Functions
 # =============================================================================
 
+
 def apply_batch_augmentations(images: torch.Tensor) -> torch.Tensor:
-    """
-    Applies random geometric augmentations (D4 Symmetry Group) to a batch of EO images.
+    """Applies random geometric augmentations (D4 Symmetry Group) to a batch of EO images.
     Input: (B, C, H, W)
-    
+
     Includes:
     - Random Horizontal Flip
     - Random Vertical Flip
@@ -253,13 +365,14 @@ def apply_batch_augmentations(images: torch.Tensor) -> torch.Tensor:
     k = random.randint(0, 3)
     if k > 0:
         images = torch.rot90(images, k, dims=[-2, -1])
-        
+
     return images
 
 
 # =============================================================================
 # Legacy Normalization Functions (for backward compatibility)
 # =============================================================================
+
 
 def normalize_image(
     image: torch.Tensor, modality: str, method='zscore'
@@ -301,16 +414,16 @@ def unnormalize_image(
 # Collate Functions
 # =============================================================================
 
+
 def single_modality_collate_fn(
     modalities,
     normalize=True,
     norm_scheme='legacy',
     target_size=(224, 224),
-    mode="train",
+    mode='train',
     return_metadata=False,
 ):
-    """
-    Collate function that randomly selects ONE modality per batch.
+    """Collate function that randomly selects ONE modality per batch.
 
     Args:
         modalities: List of modalities to randomly select from (e.g., ['S2RGB', 'S2L2A'])
@@ -325,8 +438,7 @@ def single_modality_collate_fn(
     """
     # Pre-create normalizers for all modalities
     normalizers = {
-        mod: NormalizerFactory.create(mod, norm_scheme) 
-        for mod in modalities
+        mod: NormalizerFactory.create(mod, norm_scheme) for mod in modalities
     }
 
     def collate(batch):
@@ -339,7 +451,7 @@ def single_modality_collate_fn(
             else:
                 raise ValueError(
                     f"Expected 'image' key for single modality {selected_modality}, "
-                    f"but found: {batch.keys()}"
+                    f'but found: {batch.keys()}'
                 )
         else:
             # Randomly select one modality for this batch
@@ -365,19 +477,15 @@ def single_modality_collate_fn(
             images = torch.nn.functional.interpolate(
                 images, size=target_size, mode='bilinear', align_corners=False
             )
-        
-        if mode == "train":
+
+        if mode == 'train':
             images = apply_batch_augmentations(images)
 
         # Get wavelengths for the selected modality
         wvs = torch.FloatTensor(WAVELENGTHS[selected_modality])
 
-        result = {
-            'image': images,
-            'wvs': wvs,
-            'modality': selected_modality,
-        }
-        
+        result = {'image': images, 'wvs': wvs, 'modality': selected_modality}
+
         # Optionally include metadata
         if return_metadata:
             if 'time' in batch:
@@ -400,11 +508,10 @@ def deterministic_modality_collate_fn(
     normalize=True,
     norm_scheme='legacy',
     target_size=(224, 224),
-    mode="train",
+    mode='train',
     return_metadata=False,
 ):
-    """
-    Collate function that always uses the SAME modality.
+    """Collate function that always uses the SAME modality.
 
     Useful for validation where you want consistent modality.
 
@@ -446,13 +553,13 @@ def deterministic_modality_collate_fn(
                 images, size=target_size, mode='bilinear', align_corners=False
             )
 
-        if mode == "train":
+        if mode == 'train':
             images = apply_batch_augmentations(images)
 
         wvs = torch.FloatTensor(WAVELENGTHS[modality])
 
         result = {'image': images, 'wvs': wvs, 'modality': modality}
-        
+
         # Optionally include metadata
         if return_metadata:
             if 'time' in batch:
@@ -474,10 +581,10 @@ def deterministic_modality_collate_fn(
 # DataModule
 # =============================================================================
 
+
 class TerraMeshDataModule(LightningDataModule):
-    """
-    Lightning DataModule for TerraMesh dataset with configurable normalization.
-    
+    """Lightning DataModule for TerraMesh dataset with configurable normalization.
+
     Args:
         data_path: Path to TerraMesh data
         modalities: List of modalities to use
@@ -494,17 +601,17 @@ class TerraMeshDataModule(LightningDataModule):
         target_size: Target image size (H, W)
         return_metadata: Whether to return metadata (time, lat, lon, etc.) in batches
         **kwargs: Additional arguments passed to build_terramesh_dataset
-    
+
     Note on time-aware harmonization:
         When using norm_scheme='custom' with S2L2A modality, the normalizer will
         automatically apply the +1000 harmonization offset only to images captured
         ON OR AFTER January 24, 2022 (Sentinel-2 processing baseline change date).
         Images captured BEFORE this date do not receive the offset.
-        
+
         This requires return_metadata=True in the dataset builder (set automatically
         when norm_scheme='custom' and S2L2A is in modalities).
     """
-    
+
     def __init__(
         self,
         data_path,
@@ -556,26 +663,27 @@ class TerraMeshDataModule(LightningDataModule):
 
         # Check if we need the harmonization transform for S2L2A custom normalization
         self._needs_s2l2a_harmonization = (
-            norm_scheme == 'custom' and 
-            'S2L2A' in modalities
+            norm_scheme == 'custom' and 'S2L2A' in modalities
         )
-        
+
         # Log which normalization is being used
         custom_mods = NormalizerFactory.get_custom_modalities()
         if norm_scheme == 'custom':
             affected = [m for m in modalities if m in custom_mods]
             if affected:
-                print(f"Using CUSTOM normalization for: {affected}")
+                print(f'Using CUSTOM normalization for: {affected}')
                 if 'S2L2A' in affected:
-                    print(f"  -> S2L2A: Time-aware harmonization (+1000 for images >= 2022-01-24)")
-                    print(f"            Clipping to [0, 10000]")
+                    print(
+                        '  -> S2L2A: Time-aware harmonization (+1000 for images >= 2022-01-24)'
+                    )
+                    print('            Clipping to [0, 10000]')
                 if 'S2L1C' in affected:
-                    print(f"  -> S2L1C: Clipping to [0, 10000]")
+                    print('  -> S2L1C: Clipping to [0, 10000]')
             legacy_mods = [m for m in modalities if m not in custom_mods]
             if legacy_mods:
-                print(f"Using LEGACY normalization for: {legacy_mods}")
+                print(f'Using LEGACY normalization for: {legacy_mods}')
         else:
-            print(f"Using LEGACY normalization for all modalities")
+            print('Using LEGACY normalization for all modalities')
 
         # Create collate functions
         if train_collate_mode == 'random':
@@ -584,7 +692,7 @@ class TerraMeshDataModule(LightningDataModule):
                 normalize=normalize,
                 norm_scheme=norm_scheme,
                 target_size=target_size,
-                mode="train",
+                mode='train',
                 return_metadata=return_metadata,
             )
         else:
@@ -593,7 +701,7 @@ class TerraMeshDataModule(LightningDataModule):
                 normalize=normalize,
                 norm_scheme=norm_scheme,
                 target_size=target_size,
-                mode="train",
+                mode='train',
                 return_metadata=return_metadata,
             )
 
@@ -602,7 +710,7 @@ class TerraMeshDataModule(LightningDataModule):
             normalize=normalize,
             norm_scheme=norm_scheme,
             target_size=target_size,
-            mode="eval",
+            mode='eval',
             return_metadata=return_metadata,
         )
 
@@ -703,8 +811,7 @@ class TerraMeshDataModule(LightningDataModule):
         )
 
     def get_normalizer(self, modality: str) -> nn.Module:
-        """
-        Get the normalizer module for a specific modality.
+        """Get the normalizer module for a specific modality.
         Useful for inference or visualization.
         """
         return NormalizerFactory.create(modality, self.norm_scheme)
@@ -783,22 +890,21 @@ class RunningStatsButFast(torch.nn.Module):
         return x
 
 
-
-if __name__ == "__main__": 
-    from tqdm import tqdm
+if __name__ == '__main__':
     import matplotlib.pyplot as plt
-    import seaborn as sns
     import pandas as pd
+    import seaborn as sns
+    from tqdm import tqdm
 
     dm = TerraMeshDataModule(
         data_path='/mnt/SSD2/nils/datasets/terramesh',
-        modalities=["S2L2A"], #, "S1RTC", "S2L1C", "S2RGB"],
+        modalities=['S2L2A'],  # , "S1RTC", "S2L1C", "S2RGB"],
         batch_size=16,
         num_workers=0,
         return_metadata=True,
-        norm_method="zscore",
+        norm_method='zscore',
         norm_scheme='custom',
-        normalize=True
+        normalize=True,
     )
 
     stats = RunningStatsButFast((12,), [0, 2, 3])
@@ -809,22 +915,23 @@ if __name__ == "__main__":
 
     i = 0
     for batch in tqdm(train_loader):
-
         img = batch['image']
         # Calculate batch-wise stats (not running stats)
         # Dimensions [0, 2, 3] correspond to Batch, Height, Width
         # Resulting shape: (12,)
         b_mean = img.mean(dim=[0, 2, 3]).cpu().numpy()
         b_std = img.std(dim=[0, 2, 3]).cpu().numpy()
-        
+
         # Store for every channel
         for channel_idx in range(len(b_mean)):
-            batch_stats_history.append({
-                'Batch_Index': i,
-                'Channel': f'Ch{channel_idx:02d}', # e.g., Ch01, Ch02...
-                'Batch_Mean': b_mean[channel_idx],
-                'Batch_Std': b_std[channel_idx]
-            })
+            batch_stats_history.append(
+                {
+                    'Batch_Index': i,
+                    'Channel': f'Ch{channel_idx:02d}',  # e.g., Ch01, Ch02...
+                    'Batch_Mean': b_mean[channel_idx],
+                    'Batch_Std': b_std[channel_idx],
+                }
+            )
 
         if i >= 200:
             break
@@ -834,31 +941,40 @@ if __name__ == "__main__":
     df = pd.DataFrame(batch_stats_history)
 
     # --- 2. Plotting ---
-    sns.set_theme(style="whitegrid")
+    sns.set_theme(style='whitegrid')
     fig, axes = plt.subplots(2, 2, figsize=(20, 12))
 
     # Plot A: Mean Traces (Stability over time)
-    sns.lineplot(data=df, x='Batch_Index', y='Batch_Mean', hue='Channel', ax=axes[0,0], alpha=0.7)
-    axes[0,0].set_title("Batch-wise Mean Stability (Trace)", fontsize=14)
-    axes[0,0].set_ylabel("Mean Value")
+    sns.lineplot(
+        data=df,
+        x='Batch_Index',
+        y='Batch_Mean',
+        hue='Channel',
+        ax=axes[0, 0],
+        alpha=0.7,
+    )
+    axes[0, 0].set_title('Batch-wise Mean Stability (Trace)', fontsize=14)
+    axes[0, 0].set_ylabel('Mean Value')
 
     # Plot B: Std Traces (Stability over time)
-    sns.lineplot(data=df, x='Batch_Index', y='Batch_Std', hue='Channel', ax=axes[0,1], alpha=0.7)
-    axes[0,1].set_title("Batch-wise Std Stability (Trace)", fontsize=14)
-    axes[0,1].set_ylabel("Standard Deviation")
+    sns.lineplot(
+        data=df, x='Batch_Index', y='Batch_Std', hue='Channel', ax=axes[0, 1], alpha=0.7
+    )
+    axes[0, 1].set_title('Batch-wise Std Stability (Trace)', fontsize=14)
+    axes[0, 1].set_ylabel('Standard Deviation')
 
     # Plot C: Boxplot of Means (Variance distribution)
-    sns.boxplot(data=df, x='Channel', y='Batch_Mean', ax=axes[1,0], palette="viridis")
-    axes[1,0].set_title("Distribution of Batch Means (Variance Check)", fontsize=14)
+    sns.boxplot(data=df, x='Channel', y='Batch_Mean', ax=axes[1, 0], palette='viridis')
+    axes[1, 0].set_title('Distribution of Batch Means (Variance Check)', fontsize=14)
 
     # Plot D: Boxplot of Stds (Variance distribution)
-    sns.boxplot(data=df, x='Channel', y='Batch_Std', ax=axes[1,1], palette="viridis")
-    axes[1,1].set_title("Distribution of Batch Stds (Variance Check)", fontsize=14)
+    sns.boxplot(data=df, x='Channel', y='Batch_Std', ax=axes[1, 1], palette='viridis')
+    axes[1, 1].set_title('Distribution of Batch Stds (Variance Check)', fontsize=14)
 
     plt.tight_layout()
-    plt.savefig("terramesh_normalization_diagnostics.png", dpi=300)
+    plt.savefig('terramesh_normalization_diagnostics.png', dpi=300)
     plt.show()
-        # print min, max, mean, std per channel
+    # print min, max, mean, std per channel
     #     img = batch['image']
     #     print(f"Batch {i} Image Stats:")
     #     print(f"  Min: {img.amin(dim=[0,2,3])}")

@@ -2,11 +2,11 @@ import torch
 import torch.fft
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import spectral_norm
+from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
 
 # from focal_frequency_loss import FocalFrequencyLoss as FFL
 from .ffl import FocalFrequencyLoss as FFL
-from torch.nn.utils import spectral_norm
-from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
 
 
 class CharbonnierLoss(nn.Module):
@@ -481,6 +481,3 @@ class EOConsistencyLoss(nn.Module):
 
         logs[f'{split}/loss_total'] = total_loss.detach()
         return total_loss, logs
-
-
-# ...existing code...

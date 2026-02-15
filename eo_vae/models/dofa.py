@@ -1,5 +1,6 @@
 # reference torchgeo https://torchgeo.readthedocs.io/en/latest/_modules/torchgeo/models/dofa.html#DOFA
 import logging
+import warnings
 
 # from terratorch.registry import TERRATORCH_BACKBONE_REGISTRY
 import math
@@ -119,7 +120,6 @@ def get_1d_sincos_pos_embed_from_grid_torch(embed_dim, pos):
     out: (M, D)
     """
     assert embed_dim % 2 == 0
-    old_shape = pos
     omega = torch.arange(embed_dim // 2, dtype=torch.float32, device=pos.device)
     omega /= embed_dim / 2.0
     omega = 1.0 / 10000**omega  # (D/2,)
@@ -365,11 +365,7 @@ class OFAViT(nn.Module):
         # embed patches
         wavelist = torch.tensor(wave_list, device=x.device).float()
         self.waves = wavelist
-        # TODO #1 how to convert coordinates to higher dimension
         x, _ = self.patch_embed(x, self.waves)
-
-        hw = self.img_size // self.patch_embed.kernel_size
-        hw_shape = (hw, hw)
 
         # add pos embed w/o cls token
         x = x + self.pos_embed[:, 1:, :]
@@ -459,7 +455,6 @@ class DOFAViT(nn.Module):
         x, _ = self.patch_embed(x, self.waves)
         B, HW, C = x.shape
         hw = int(math.sqrt(HW))
-        hw_shape = (hw, hw)
         if self.dynamic_img_size:
             x = x.view(B, hw, hw, C)
 
@@ -759,7 +754,6 @@ def dofav2_base_patch14_224(
         model = load_dofa_weights(
             model, pos_interpolation_mode, ckpt_data, weights, input_size
         )
-    wavelengths = get_wavelenghts(model_bands)
 
     return model
     # return DOFAEncoderWrapper(model, wavelengths, weights, out_indices)
@@ -797,7 +791,6 @@ def dofav2_large_patch14_224(
         model = load_dofa_weights(
             model, pos_interpolation_mode, ckpt_data, weights, input_size, patch_size=14
         )
-    wavelengths = get_wavelenghts(model_bands)
 
     return model
     # return DOFAEncoderWrapper(model, wavelengths, weights, out_indices)

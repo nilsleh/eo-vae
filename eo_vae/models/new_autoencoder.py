@@ -1,5 +1,4 @@
-"""
-Clean EO-VAE Lightning Module for Finetuning.
+"""Clean EO-VAE Lightning Module for Finetuning.
 
 This module handles:
 - Standard VAE training with reconstruction + KL loss
@@ -13,12 +12,11 @@ For weight distillation, see: distill.py
 import json
 import math
 import os
-from typing import Any, Literal
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-import random
 from lightning import LightningModule
 from safetensors import safe_open
 from torch import Tensor
@@ -29,10 +27,10 @@ from torch.optim.lr_scheduler import LambdaLR
 from .model import Decoder, Encoder
 from .modules.distributions import DiagonalGaussianDistribution
 
-
 # =============================================================================
 # LEARNING RATE SCHEDULER
 # =============================================================================
+
 
 def get_cosine_schedule_with_warmup(
     optimizer: Optimizer,
@@ -60,6 +58,7 @@ def get_cosine_schedule_with_warmup(
 # =============================================================================
 # EO-VAE LIGHTNING MODULE
 # =============================================================================
+
 
 class EOFluxVAE(LightningModule):
     """Earth Observation VAE based on Flux architecture.
@@ -115,7 +114,6 @@ class EOFluxVAE(LightningModule):
         self.p_prior = p_prior
         self.p_prior_s = p_prior_s
         self.anisotropic = anisotropic
-
 
         self.latent_noise_p = latent_noise_p
         self.noise_tau = noise_tau
@@ -295,7 +293,7 @@ class EOFluxVAE(LightningModule):
 
     def _load_checkpoint(self, path: str, ignore_keys: list[str]) -> None:
         """Load pretrained weights from checkpoint.
-        
+
         Supports three checkpoint formats:
         1. Flux VAE checkpoint (.safetensors) - loads body weights, skips dynamic layers
         2. Distilled checkpoint (.pt with 'encoder_conv_in_state_dict') - loads dynamic layers
@@ -310,10 +308,13 @@ class EOFluxVAE(LightningModule):
         # Check if this is a distilled checkpoint
         if path.endswith('.pt'):
             ckpt = torch.load(path, map_location='cpu')
-            if 'encoder_conv_in_state_dict' in ckpt or 'decoder_conv_out_state_dict' in ckpt:
+            if (
+                'encoder_conv_in_state_dict' in ckpt
+                or 'decoder_conv_out_state_dict' in ckpt
+            ):
                 self._load_distilled_checkpoint(ckpt)
                 return
-        
+
         # Load state dict (safetensors or regular checkpoint)
         if path.endswith('.safetensors'):
             sd = {}
@@ -352,28 +353,30 @@ class EOFluxVAE(LightningModule):
 
         # Verify critical weights loaded
         self._verify_loading(missing, unexpected, ignore_keys)
-    
+
     def _load_distilled_checkpoint(self, ckpt: dict) -> None:
         """Load weights from a distillation checkpoint.
-        
+
         Args:
             ckpt: Checkpoint dict with encoder/decoder state dicts
         """
-        print("Detected distillation checkpoint format")
-        
+        print('Detected distillation checkpoint format')
+
         # Load encoder dynamic layer
         if self.encoder.use_dynamic_ops and ckpt.get('encoder_conv_in_state_dict'):
             self.encoder.conv_in.load_state_dict(ckpt['encoder_conv_in_state_dict'])
-            print("  Loaded encoder.conv_in from distilled checkpoint")
-        
+            print('  Loaded encoder.conv_in from distilled checkpoint')
+
         # Load decoder dynamic layer
         if self.decoder.use_dynamic_ops and ckpt.get('decoder_conv_out_state_dict'):
             self.decoder.conv_out.load_state_dict(ckpt['decoder_conv_out_state_dict'])
-            print("  Loaded decoder.conv_out from distilled checkpoint")
-        
+            print('  Loaded decoder.conv_out from distilled checkpoint')
+
         # Log distillation info if available
         if 'distill_config' in ckpt:
-            print(f"  Distillation loss was: {ckpt['distill_config'].get('final_loss', 'N/A')}")
+            print(
+                f'  Distillation loss was: {ckpt["distill_config"].get("final_loss", "N/A")}'
+            )
 
     def _verify_loading(
         self,
@@ -402,8 +405,10 @@ class EOFluxVAE(LightningModule):
                 f'Total: {len(critical_missing)} missing keys'
             )
 
-        print(f'Checkpoint loaded: {len(missing_keys)} missing (expected), '
-              f'{len(unexpected_keys)} unexpected (ignored)')
+        print(
+            f'Checkpoint loaded: {len(missing_keys)} missing (expected), '
+            f'{len(unexpected_keys)} unexpected (ignored)'
+        )
 
     # =========================================================================
     # FORWARD PASS
@@ -418,14 +423,13 @@ class EOFluxVAE(LightningModule):
         """Decode latent to image."""
         z = self._inv_normalize_latent(z)
         z = rearrange(
-            z, '... (c pi pj) i j -> ... c (i pi) (j pj)',
-            pi=self.ps[0], pj=self.ps[1]
+            z, '... (c pi pj) i j -> ... c (i pi) (j pj)', pi=self.ps[0], pj=self.ps[1]
         )
         return self.decoder(z, wvs)
 
     def decode_raw(self, z: Tensor, wvs: Tensor) -> Tensor:
-        """Decode raw latent (unshuffled, no BN) to image. 
-        
+        """Decode raw latent (unshuffled, no BN) to image.
+
         Use this when decoding latents that come directly from the encoder output
         (e.g., during super-res training/inference where we skip the VAE's internal
         regularization layers).
@@ -433,7 +437,9 @@ class EOFluxVAE(LightningModule):
         return self.decoder(z, wvs)
 
     def noising(self, x: torch.Tensor) -> torch.Tensor:
-        noise_sigma = self.noise_tau * torch.rand((x.size(0),) + (1,) * (len(x.shape) - 1), device=x.device)
+        noise_sigma = self.noise_tau * torch.rand(
+            (x.size(0),) + (1,) * (len(x.shape) - 1), device=x.device
+        )
         noise = noise_sigma * torch.randn_like(x)
         return x + noise
 
@@ -457,8 +463,7 @@ class EOFluxVAE(LightningModule):
 
         # Shuffle and normalize
         z_shuffled = rearrange(
-            z, '... c (i pi) (j pj) -> ... (c pi pj) i j',
-            pi=self.ps[0], pj=self.ps[1]
+            z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=self.ps[0], pj=self.ps[1]
         )
         z_normalized = self._normalize_latent(z_shuffled)
 
@@ -467,38 +472,38 @@ class EOFluxVAE(LightningModule):
             # if random > latent_noise_p, add noise
             if random.random() < self.latent_noise_p:
                 z_normalized = self.noising(z_normalized)
-            
+
         reconstruction = self.decode(z_normalized, wvs)
         return reconstruction, posterior
-    
+
     @torch.no_grad()
     def encode_spatial_normalized(self, x: Tensor, wvs: Tensor) -> Tensor:
-        """
-        Encode to spatially-structured normalized latent.
-        
+        """Encode to spatially-structured normalized latent.
+
         Process:
         1. Encode -> z
         2. Shuffle -> z_shuffled
         3. BN using VAE stats -> z_norm
         4. Unshuffle -> z_spatial
-        
+
         Returns: [B, C, H, W] where C=32, preserving spatial layout but with VAE normalization applied.
         """
         # Get normalized packed latent [B, 128, H/16, W/16]
         z_norm = self.encode_to_latent(x, wvs)
-        
+
         # Unshuffle back to spatial [B, 32, H/8, W/8]
         z_spatial = rearrange(
-            z_norm, '... (c pi pj) i j -> ... c (i pi) (j pj)',
-            pi=self.ps[0], pj=self.ps[1]
+            z_norm,
+            '... (c pi pj) i j -> ... c (i pi) (j pj)',
+            pi=self.ps[0],
+            pj=self.ps[1],
         )
         return z_spatial
 
     @torch.no_grad()
     def decode_spatial_normalized(self, z: Tensor, wvs: Tensor) -> Tensor:
-        """
-        Decode from spatially-structured normalized latent.
-        
+        """Decode from spatially-structured normalized latent.
+
         Process:
         1. Shuffle -> z_packed
         2. Inverse BN (handled by decode)
@@ -506,18 +511,12 @@ class EOFluxVAE(LightningModule):
         """
         # Shuffle to packed format [B, 128, H/16, W/16]
         z_packed = rearrange(
-            z, '... c (i pi) (j pj) -> ... (c pi pj) i j',
-            pi=self.ps[0], pj=self.ps[1]
+            z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=self.ps[0], pj=self.ps[1]
         )
         # Decode expects packed normalized latent
         return self.decode(z_packed, wvs)
-        
 
-    def _apply_scale(
-        self,
-        z: Tensor,
-        scale: float | tuple[float, float],
-    ) -> Tensor:
+    def _apply_scale(self, z: Tensor, scale: float | tuple[float, float]) -> Tensor:
         """Apply scale transformation to latent."""
         h, w = z.shape[-2:]
         if isinstance(scale, (tuple, list)):
@@ -526,7 +525,9 @@ class EOFluxVAE(LightningModule):
         else:
             new_h = round(h * scale / self.ps[0]) * self.ps[0]
             new_w = round(w * scale / self.ps[1]) * self.ps[1]
-        return F.interpolate(z, size=(new_h, new_w), mode='bilinear', align_corners=False)
+        return F.interpolate(
+            z, size=(new_h, new_w), mode='bilinear', align_corners=False
+        )
 
     def _normalize_latent(self, z: Tensor) -> Tensor:
         """Apply batch normalization to latent."""
@@ -547,9 +548,7 @@ class EOFluxVAE(LightningModule):
     def configure_optimizers(self):
         """Configure optimizers and schedulers."""
         # Collect trainable parameters
-        ae_params = [
-            p for p in self.encoder.parameters() if p.requires_grad
-        ] + [
+        ae_params = [p for p in self.encoder.parameters() if p.requires_grad] + [
             p for p in self.decoder.parameters() if p.requires_grad
         ]
 
@@ -560,8 +559,7 @@ class EOFluxVAE(LightningModule):
         # Discriminator optimizer (if present)
         if hasattr(self.loss_fn, 'discriminator'):
             opt_disc = torch.optim.Adam(
-                self.loss_fn.discriminator.parameters(),
-                lr=self.base_lr,
+                self.loss_fn.discriminator.parameters(), lr=self.base_lr
             )
             optimizers.append(opt_disc)
 
@@ -608,11 +606,14 @@ class EOFluxVAE(LightningModule):
             angle = random.choice([1, 2, 3])
             scale = (
                 (random.choice(scale_bins), random.choice(scale_bins))
-                if self.anisotropic else random.choice(scale_bins)
+                if self.anisotropic
+                else random.choice(scale_bins)
             )
             recon, posterior = self.forward(images, wvs, scale=scale, angle=angle)
             with torch.no_grad():
-                target_images = F.interpolate(images, size=recon.shape[-2:], mode='area')
+                target_images = F.interpolate(
+                    images, size=recon.shape[-2:], mode='area'
+                )
                 target_images = torch.rot90(target_images, k=angle, dims=[-1, -2])
 
         elif random.random() < self.p_prior_s:
@@ -620,7 +621,9 @@ class EOFluxVAE(LightningModule):
             scale = random.choice(scale_bins)
             recon, posterior = self.forward(images, wvs, scale=scale)
             with torch.no_grad():
-                target_images = F.interpolate(images, size=recon.shape[-2:], mode='area')
+                target_images = F.interpolate(
+                    images, size=recon.shape[-2:], mode='area'
+                )
 
         else:
             # Standard reconstruction
@@ -643,7 +646,9 @@ class EOFluxVAE(LightningModule):
 
         self.manual_backward(gen_loss)
         if self.clip_grad:
-            torch.nn.utils.clip_grad_norm_(opt_gen.param_groups[0]['params'], self.clip_grad)
+            torch.nn.utils.clip_grad_norm_(
+                opt_gen.param_groups[0]['params'], self.clip_grad
+            )
         opt_gen.step()
         if sch_gen:
             sch_gen.step()
@@ -677,7 +682,9 @@ class EOFluxVAE(LightningModule):
 
         # Logging
         log_dict_gen['train/lr'] = opt_gen.param_groups[0]['lr']
-        self.log_dict(log_dict_gen, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+        self.log_dict(
+            log_dict_gen, prog_bar=True, logger=True, on_step=True, on_epoch=False
+        )
 
         return gen_loss
 
@@ -698,7 +705,9 @@ class EOFluxVAE(LightningModule):
             split='val',
         )
 
-        self.log_dict(log_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log_dict(
+            log_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True
+        )
         return val_loss
 
     # =========================================================================
@@ -723,7 +732,6 @@ class EOFluxVAE(LightningModule):
         posterior = self.encode(x, wvs)
         z = posterior.mode()
         z_shuffled = rearrange(
-            z, '... c (i pi) (j pj) -> ... (c pi pj) i j',
-            pi=self.ps[0], pj=self.ps[1]
+            z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=self.ps[0], pj=self.ps[1]
         )
         return self._normalize_latent(z_shuffled)

@@ -121,7 +121,6 @@ def main(epochs):
     )
     # criterion = nn.MSELoss()
     criterion = torch.nn.HuberLoss()
-    running_loss = 0
     scaler = torch.cuda.amp.GradScaler()
 
     # wg_weights = torch.load('weight_generator_init_0.01_er50k.pt')

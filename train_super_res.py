@@ -4,18 +4,14 @@ import argparse
 import os
 from datetime import datetime
 from typing import Any
-from pathlib import Path
+
 import torch
-import cartopy
 from hydra.utils import instantiate
-from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from omegaconf import OmegaConf
 
 from eo_vae.utils.super_res_image_logger import SuperResImageLogger
-
-import sys
-
 
 OmegaConf.register_new_resolver('eval', eval)
 
@@ -80,14 +76,15 @@ def run_experiment(config, debug: bool = False) -> None:
         )
         lr_monitor = LearningRateMonitor(logging_interval='step')
 
-
-    callbacks = [checkpoint_callback, img_logger, lr_monitor] if checkpoint_callback else []
+    callbacks = (
+        [checkpoint_callback, img_logger, lr_monitor] if checkpoint_callback else []
+    )
 
     trainer = instantiate(config.trainer, callbacks=callbacks, logger=loggers)
 
     if not debug:
         # add vae_ckpt to config
-        config["vae_ckpt"] = args.ckpt
+        config['vae_ckpt'] = args.ckpt
         with open(
             os.path.join(config['experiment']['save_dir'], 'config.yaml'), 'w'
         ) as f:

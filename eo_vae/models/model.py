@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from .modules.dynamic_basis import DynamicInputLayer, DynamicOutputLayer
 from .modules.dynamic_conv import DynamicConv, DynamicConv_decoder
 from .modules.layers import AttnBlock, Downsample, ResnetBlock, Upsample
 
@@ -15,7 +14,6 @@ def swish(x: Tensor) -> Tensor:
     return x * torch.sigmoid(x)
 
 
-# --- NEW: Helper for Sinusoidal Embeddings ---
 def get_1d_sincos_pos_embed(embed_dim: int, pos: Tensor) -> Tensor:
     """Generates sinusoidal embeddings for wavelengths."""
     if pos.dim() == 1:
@@ -34,7 +32,6 @@ def get_1d_sincos_pos_embed(embed_dim: int, pos: Tensor) -> Tensor:
     return embedding
 
 
-# --- NEW: Modality Conditioner ---
 class WavelengthConditioner(nn.Module):
     """Encodes a set of wavelengths into a global style vector for AdaIN."""
 
@@ -102,9 +99,7 @@ class Encoder(nn.Module):
                 self.cond_dim = 512
                 self.conditioner = WavelengthConditioner(embed_dim=self.cond_dim)
 
-            mode = dynamic_kwargs.pop('mode', 'conv')  # 'conv' or 'basis'
-
-            # ...existing code...
+            dynamic_kwargs.pop('mode', 'conv')
             wv_planes = dynamic_kwargs.pop('wv_planes', 128)
             inter_dim = dynamic_kwargs.pop('inter_dim', 128)
 
@@ -212,12 +207,10 @@ class Encoder(nn.Module):
             if self.use_dynamic_ops and any(x in name for x in ignore_layers):
                 # Skip dynamic/adain layers
                 continue
-            # ...existing code...
             if name not in own_state:
                 if strict:
                     raise KeyError(f'Unexpected key {name} in state_dict')
                 continue
-            # ...existing code...
             try:
                 own_state[name].copy_(param)
             except RuntimeError as e:
@@ -304,13 +297,12 @@ class Decoder(nn.Module):
         )
 
         if self.use_dynamic_ops:
-            # ...existing code...
             # Re-fetch kwargs because we might have popped from a copy above
             dynamic_kwargs = dynamic_conv_kwargs.copy() if dynamic_conv_kwargs else {}
             # Remove use_adain from kwargs passed to dynamic layers
             dynamic_kwargs.pop('use_adain', None)
 
-            mode = dynamic_kwargs.pop('mode', 'conv')
+            dynamic_kwargs.pop('mode', 'conv')
 
             wv_planes = dynamic_kwargs.pop('wv_planes', 128)
             inter_dim = dynamic_kwargs.pop('inter_dim', 128)
@@ -374,10 +366,8 @@ class Decoder(nn.Module):
         for name, param in state_dict.items():
             if self.use_dynamic_ops and any(x in name for x in ignore_layers):
                 continue
-            # ...existing code...
             if name not in own_state:
                 continue
-            # ...existing code...
             try:
                 own_state[name].copy_(param)
             except RuntimeError as e:

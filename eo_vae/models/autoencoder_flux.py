@@ -1,10 +1,10 @@
 import math
 import os
+import random
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-import random
 from lightning import LightningModule
 from safetensors import safe_open
 from torch import Tensor
@@ -435,39 +435,38 @@ class FluxAutoencoderKL(LightningModule):
         posterior = self.encode(x, wvs)
         z = posterior.mode()
         z_shuffled = rearrange(
-            z, '... c (i pi) (j pj) -> ... (c pi pj) i j',
-            pi=self.ps[0], pj=self.ps[1]
+            z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=self.ps[0], pj=self.ps[1]
         )
         return self.normalize_latent(z_shuffled)
-    
+
     @torch.no_grad()
     def encode_spatial_normalized(self, x: Tensor, wvs: Tensor) -> Tensor:
-        """
-        Encode to spatially-structured normalized latent.
-        
+        """Encode to spatially-structured normalized latent.
+
         Process:
         1. Encode -> z
         2. Shuffle -> z_shuffled
         3. BN using VAE stats -> z_norm
         4. Unshuffle -> z_spatial
-        
+
         Returns: [B, C, H, W] where C=32, preserving spatial layout but with VAE normalization applied.
         """
         # Get normalized packed latent [B, 128, H/16, W/16]
         z_norm = self.encode_to_latent(x, wvs)
-        
+
         # Unshuffle back to spatial [B, 32, H/8, W/8]
         z_spatial = rearrange(
-            z_norm, '... (c pi pj) i j -> ... c (i pi) (j pj)',
-            pi=self.ps[0], pj=self.ps[1]
+            z_norm,
+            '... (c pi pj) i j -> ... c (i pi) (j pj)',
+            pi=self.ps[0],
+            pj=self.ps[1],
         )
         return z_spatial
 
     @torch.no_grad()
     def decode_spatial_normalized(self, z: Tensor, wvs: Tensor) -> Tensor:
-        """
-        Decode from spatially-structured normalized latent.
-        
+        """Decode from spatially-structured normalized latent.
+
         Process:
         1. Shuffle -> z_packed
         2. Inverse BN (handled by decode)
@@ -475,8 +474,7 @@ class FluxAutoencoderKL(LightningModule):
         """
         # Shuffle to packed format [B, 128, H/16, W/16]
         z_packed = rearrange(
-            z, '... c (i pi) (j pj) -> ... (c pi pj) i j',
-            pi=self.ps[0], pj=self.ps[1]
+            z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=self.ps[0], pj=self.ps[1]
         )
         # Decode expects packed normalized latent
         return self.decode(z_packed, wvs)
@@ -575,14 +573,12 @@ class FluxAutoencoderKL(LightningModule):
         # Discrete bins [8/32, 16/32, 24/32] -> [0.25, 0.5, 0.75]
         # This prevents the 'new shape every batch' slowdown
         scale_bins = [0.375, 0.5, 0.75]
-        current_mode = 'standard'
 
         # =========================================================
         # 1. EQ-VAE REGULARIZATION & FORWARD PASS
         # =========================================================
 
         if random.random() < self.p_prior:
-            current_mode = 'latent_equivariance'
             angle = random.choice([1, 2, 3])
             if self.anisotropic:
                 scale = (random.choice(scale_bins), random.choice(scale_bins))
@@ -599,7 +595,6 @@ class FluxAutoencoderKL(LightningModule):
                 target_images = torch.rot90(target_images, k=angle, dims=[-1, -2])
 
         elif random.random() < self.p_prior_s:
-            current_mode = 'prior_preservation'
             scale = random.choice(scale_bins)
 
             recon, posterior = self.forward(images, wvs, scale=scale)

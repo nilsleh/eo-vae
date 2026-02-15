@@ -245,11 +245,11 @@ def zarr_decoding_harmonized(key, value):
         data = zarr.open_consolidated(mapper, mode='r')
         bands = data['bands'][...].astype(np.float32)
         timestamp = data['time'][...]
-        
+
         # Apply +1000 shift for post-baseline images
         if timestamp >= S2L2A_BASELINE_CUTOFF_NS:
             bands = bands + 1000.0
-        
+
         return bands
 
 
@@ -263,14 +263,18 @@ def zarr_metadata_decoding(sample, harmonize_s2l2a: bool = False):
             bands = data['bands'][...].astype(np.float32)
             timestamp = data['time'][...]
 
-            # In multimodal, keys are 'S2L2A.zarr.zip'. 
+            # In multimodal, keys are 'S2L2A.zarr.zip'.
             # In single modality, key is 'zarr.zip' (and the caller ensures harmonize_s2l2a is only True for S2L2A).
             is_s2l2a_key = 'S2L2A' in key or key == 'zarr.zip'
-            
+
             # Apply S2L2A harmonization ONLY if it's the correct modality
-            if harmonize_s2l2a and is_s2l2a_key and timestamp >= S2L2A_BASELINE_CUTOFF_NS:
+            if (
+                harmonize_s2l2a
+                and is_s2l2a_key
+                and timestamp >= S2L2A_BASELINE_CUTOFF_NS
+            ):
                 bands = bands + 1000.0
-            
+
             sample[key] = bands
 
             # Add metadata
@@ -300,8 +304,10 @@ def zarr_metadata_decoding(sample, harmonize_s2l2a: bool = False):
 
 def make_zarr_metadata_decoder(harmonize_s2l2a: bool = False):
     """Factory function to create zarr_metadata_decoding with harmonization option."""
+
     def decoder(sample):
         return zarr_metadata_decoding(sample, harmonize_s2l2a=harmonize_s2l2a)
+
     return decoder
 
 
@@ -318,13 +324,13 @@ def drop_time_dim(value, dim: int = 0):
         return value.squeeze(dim)
 
     elif isinstance(value, dict):
-        if "image" in value:
-            value["image"] = value["image"].squeeze(dim)
+        if 'image' in value:
+            value['image'] = value['image'].squeeze(dim)
             return value
         else:
             # multimodal case
-            for k, v in value.items():  
-                if (isinstance(v, np.ndarray) or isinstance(v, torch.Tensor)):
+            for k, v in value.items():
+                if isinstance(v, np.ndarray) or isinstance(v, torch.Tensor):
                     # if v.shape[dim] == 1:
                     value[k] = v.squeeze(dim)
             return value
@@ -434,7 +440,7 @@ def _subset_pipeline(
         decoder = wds.map(make_zarr_metadata_decoder(harmonize_s2l2a=harmonize_s2l2a))
     else:
         decoder = wds.decode(zarr_decoding)
-    
+
     return wds.DataPipeline(
         wds.ResampledShards(
             urls, deterministic=deterministic, seed=seed, empty_check=empty_check
@@ -484,10 +490,10 @@ def build_multimodal_dataset(
             'NDVI',
             'LULC',
         ]  # Default
-    
+
     # Only apply harmonization if S2L2A is in the modalities
     should_harmonize = harmonize_s2l2a and 'S2L2A' in modalities
-    
+
     if urls is None:
         # Filter modalities based availability (S1GRD and S1RTC not present in all subsets)
         def filter_list(lst, value):

@@ -1,10 +1,9 @@
 import argparse
-import torch
-import numpy as np
+
 import matplotlib.pyplot as plt
+import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
-from tqdm import tqdm
 
 # Import your normalization logic
 from eo_vae.datasets.terramesh_datamodule import normalize_image, unnormalize_image
@@ -13,9 +12,7 @@ OmegaConf.register_new_resolver('eval', eval)
 
 
 def collect_pixel_data(cfg_path, modality, num_pixels=50000):
-    """
-    Loads data for a specific modality and converts it to Raw, Z-Score, and Robust spaces.
-    """
+    """Loads data for a specific modality and converts it to Raw, Z-Score, and Robust spaces."""
     # 1. Setup Loader
     cfg = OmegaConf.load(cfg_path)
     cfg.datamodule.val_collate_mode = modality

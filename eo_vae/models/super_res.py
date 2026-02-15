@@ -7,11 +7,10 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LambdaLR
-
 from lightning import LightningModule
 from lightning.pytorch.cli import LRSchedulerCallable, OptimizerCallable
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
 
 
 def get_cosine_schedule_with_warmup(
@@ -74,7 +73,6 @@ class DiffusionSuperRes(LightningModule):
         self.final_lr = final_lr
         self.warmup_epochs = warmup_epochs
         self.decay_end_epoch = decay_end_epoch
-
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, **kwargs) -> torch.Tensor:
         """Forward pass through the denoiser.
@@ -170,7 +168,10 @@ class DiffusionSuperRes(LightningModule):
         else:
             optimizer = self.optimizer(self.denoiser.parameters())
 
-        if all([self.final_lr, self.warmup_epochs, self.decay_end_epoch]) and self.base_lr is not None:
+        if (
+            all([self.final_lr, self.warmup_epochs, self.decay_end_epoch])
+            and self.base_lr is not None
+        ):
             steps_per_epoch = 152  # Estimate
             num_warmup = self.warmup_epochs * steps_per_epoch
             num_total = self.decay_end_epoch * steps_per_epoch
@@ -195,4 +196,3 @@ class DiffusionSuperRes(LightningModule):
             }
         else:
             return {'optimizer': optimizer}
-
