@@ -10,9 +10,10 @@ This module handles:
 For weight distillation, see: distill.py
 """
 
+import json
 import math
 import os
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
@@ -22,8 +23,10 @@ from lightning import LightningModule
 from safetensors import safe_open
 from torch import Tensor
 from torch.optim import Optimizer
+from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import LambdaLR
 
+from .model import Decoder, Encoder
 from .modules.distributions import DiagonalGaussianDistribution
 
 
@@ -137,6 +140,133 @@ class EOFluxVAE(LightningModule):
         # Load checkpoint
         if ckpt_path:
             self._load_checkpoint(ckpt_path, ignore_keys or [])
+
+    @staticmethod
+    def _read_config_file(config_path: str) -> dict[str, Any]:
+        """Read a model config from YAML/JSON and return a plain dict."""
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f'Config file not found: {config_path}')
+
+        data = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+
+        if not isinstance(data, dict):
+            raise ValueError('Model config must deserialize to a dictionary')
+        return data
+
+    @staticmethod
+    def _extract_model_sections(config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Extract encoder/decoder/vae kwargs from either full-train or minimal config."""
+        model_cfg = config.get('model', config)
+        if not isinstance(model_cfg, dict):
+            raise ValueError('Invalid config: `model` section must be a dictionary')
+
+        if 'encoder' not in model_cfg or 'decoder' not in model_cfg:
+            raise ValueError('Invalid config: expected `encoder` and `decoder` sections')
+
+        encoder_cfg = dict(model_cfg['encoder'])
+        decoder_cfg = dict(model_cfg['decoder'])
+        encoder_cfg.pop('_target_', None)
+        decoder_cfg.pop('_target_', None)
+
+        vae_keys = {
+            'freeze_body',
+            'base_lr',
+            'final_lr',
+            'warmup_epochs',
+            'decay_end_epoch',
+            'clip_grad',
+            'p_prior',
+            'p_prior_s',
+            'anisotropic',
+            'latent_noise_p',
+            'noise_tau',
+            'image_key',
+        }
+        vae_kwargs = {k: model_cfg[k] for k in vae_keys if k in model_cfg}
+        return encoder_cfg, decoder_cfg, vae_kwargs
+
+    @classmethod
+    def from_config(
+        cls,
+        config_path: str,
+        ckpt_path: str | None = None,
+        *,
+        loss_fn: torch.nn.Module | None = None,
+        freeze_body: bool | None = None,
+        ignore_keys: list[str] | None = None,
+        device: str | torch.device | None = None,
+        eval_mode: bool = True,
+    ) -> 'EOFluxVAE':
+        """Build EOFluxVAE from a compact config and optional checkpoint."""
+        config = cls._read_config_file(config_path)
+        encoder_cfg, decoder_cfg, vae_kwargs = cls._extract_model_sections(config)
+
+        if freeze_body is not None:
+            vae_kwargs['freeze_body'] = freeze_body
+
+        model = cls(
+            encoder=Encoder(**encoder_cfg),
+            decoder=Decoder(**decoder_cfg),
+            loss_fn=loss_fn if loss_fn is not None else torch.nn.Identity(),
+            freeze_body=vae_kwargs.pop('freeze_body', False),
+            **vae_kwargs,
+        )
+
+        if ckpt_path:
+            model._load_checkpoint(ckpt_path, ignore_keys or [])
+
+        if device is not None:
+            model = model.to(device)
+        if eval_mode:
+            model.eval()
+        return model
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        repo_id: str,
+        *,
+        ckpt_filename: str = 'eo-vae.ckpt',
+        config_filename: str = 'model_config.yaml',
+        revision: str | None = None,
+        cache_dir: str | None = None,
+        local_files_only: bool = False,
+        loss_fn: torch.nn.Module | None = None,
+        freeze_body: bool | None = None,
+        ignore_keys: list[str] | None = None,
+        device: str | torch.device | None = None,
+        eval_mode: bool = True,
+    ) -> 'EOFluxVAE':
+        """Download config/checkpoint from Hugging Face Hub and build EOFluxVAE."""
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:
+            raise ImportError('huggingface_hub is required for from_pretrained') from exc
+
+        config_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=config_filename,
+            revision=revision,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        ckpt_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=ckpt_filename,
+            revision=revision,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+
+        return cls.from_config(
+            config_path=config_path,
+            ckpt_path=ckpt_path,
+            loss_fn=loss_fn,
+            freeze_body=freeze_body,
+            ignore_keys=ignore_keys,
+            device=device,
+            eval_mode=eval_mode,
+        )
 
     # =========================================================================
     # INITIALIZATION
