@@ -363,6 +363,7 @@ If you use this code, please cite:
 @article{eo-vae,
   title={EO-VAE: Towards a Multi-Modal Variational Autoencoder for Earth Observation},
   authors={Lehmann, Nils and Wang, Yi and Xiong, Zhitong and Zhu, Xiaoxiang},
+  journal={arXiv preprint arXiv:2602.12177},
   year={2026}
 }
 ```
