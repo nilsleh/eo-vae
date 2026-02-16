@@ -1,11 +1,15 @@
-from .autoencoder import AutoencoderKL as AutoencoderKL
-from .autoencoder_flux import FluxAutoencoderKL as FluxAutoencoderKL
-from .diffusers_vae import EOVAEDiffusersModel as EOVAEDiffusersModel
-from .model import Decoder as Decoder, Encoder as Encoder
-from .new_autoencoder import EOFluxVAE as EOFluxVAE
+from .autoencoder import AutoencoderKL
+from .autoencoder_flux import FluxAutoencoderKL
+from .model import Decoder, Encoder
+from .new_autoencoder import EOFluxVAE
 
 try:
-    from .ssdd import EOSSDD as EOSSDD
+    from .diffusers_vae import EOVAEDiffusersModel
+except ImportError:
+    EOVAEDiffusersModel = None
+
+try:
+    from .ssdd import EOSSDD
 except ImportError:
     EOSSDD = None
 
@@ -14,7 +18,7 @@ __all__ = (
     'FluxAutoencoderKL',
     'Encoder',
     'Decoder',
-    'EOSSDD',
     'EOFluxVAE',
     'EOVAEDiffusersModel',
+    'EOSSDD',
 )

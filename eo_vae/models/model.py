@@ -14,7 +14,6 @@ def swish(x: Tensor) -> Tensor:
     return x * torch.sigmoid(x)
 
 
-# --- NEW: Helper for Sinusoidal Embeddings ---
 def get_1d_sincos_pos_embed(embed_dim: int, pos: Tensor) -> Tensor:
     """Generates sinusoidal embeddings for wavelengths."""
     if pos.dim() == 1:
@@ -33,7 +32,6 @@ def get_1d_sincos_pos_embed(embed_dim: int, pos: Tensor) -> Tensor:
     return embedding
 
 
-# --- NEW: Modality Conditioner ---
 class WavelengthConditioner(nn.Module):
     """Encodes a set of wavelengths into a global style vector for AdaIN."""
 

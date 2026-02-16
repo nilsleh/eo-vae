@@ -24,6 +24,48 @@ cd /path/to/eo-vae
 pip install -e .
 ```
 
+### Using a pretrained checkpoint (Inference)
+
+Use the built-in config-driven loader to avoid manual `Encoder`/`Decoder` construction.
+
+```python
+import torch
+from eo_vae.models.new_autoencoder import EOFluxVAE
+
+model = EOFluxVAE.from_pretrained(
+    repo_id="nilsleh/eo-vae", 
+    ckpt_filename="eo-vae.ckpt",
+    config_filename="model_config.yaml",
+    device="cpu",
+)
+
+# Run reconstruction / latent extraction
+x = torch.randn(1, 3, 256, 256)
+wvs = torch.tensor([0.665, 0.56, 0.49], dtype=torch.float32)  # example for S2RGB
+
+with torch.no_grad():
+    recon = model.reconstruct(x, wvs)                # [B, 3, 256, 256]
+    z = model.encode_spatial_normalized(x, wvs)      # [B, 32, 32, 32] for 256x256 input
+```
+
+These are the wavelengths used across modalities:
+
+
+```python
+WAVELENGTHS = {
+    'S2RGB': [0.665, 0.56, 0.49],
+    'S1RTC': [5.4, 5.6],
+    'S2L2A': [
+        0.443, 0.490, 0.560, 0.665, 0.705, 0.740,
+        0.783, 0.842, 0.865, 1.610, 2.190, 0.945,
+    ],
+    'S2L1C': [
+        0.443, 0.490, 0.560, 0.665, 0.705, 0.740,
+        0.783, 0.842, 0.865, 0.945, 1.375, 1.610, 2.190,
+    ],
+}
+```
+
 ### Data Requirements
 
 The pipeline expects the following data structure:
@@ -361,8 +403,9 @@ If you use this code, please cite:
 
 ```bibtex
 @article{eo-vae,
-  title={EO-VAE: Towards a Multi-Modal Variational Autoencoder for Earth Observation},
-  authors={Lehmann, Nils and Wang, Yi and Xiong, Zhitong and Zhu, Xiaoxiang},
+  title={EO-VAE: Towards A Multi-sensor Tokenizer for Earth Observation Data},
+  author={Lehmann, Nils and Wang, Yi and Xiong, Zhitong and Zhu, Xiaoxiang},
+  journal={arXiv preprint arXiv:2602.12177},
   year={2026}
 }
 ```
