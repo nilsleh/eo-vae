@@ -50,25 +50,21 @@ with torch.no_grad():
     z = model.encode_spatial_normalized(x, wvs)      # [B, 32, 32, 32] for 256x256 input
 ```
 
-#### Option 2: Diffusers-style (HuggingFace)
+#### Option 2: Diffusers-style (standalone, no eo-vae package)
 
-A pre-converted EO-VAE in [HuggingFace/diffusers](https://github.com/huggingface/diffusers) format is available at **[BiliSakura/EO-VAE](https://huggingface.co/BiliSakura/EO-VAE)**. This format is convenient for integration with diffusers pipelines.
+A pre-converted EO-VAE in [HuggingFace/diffusers](https://github.com/huggingface/diffusers) format is available at **[BiliSakura/EO-VAE](https://huggingface.co/BiliSakura/EO-VAE)**. The repo is **self-contained**: it works with only `diffusers`, `torch`, `safetensors`—no eo-vae installation needed.
 
 ```python
 import torch
-from eo_vae.models.diffusers_vae import EOVAEDiffusersModel, WAVELENGTHS
+from huggingface_hub import snapshot_download
+import sys
+model_dir = snapshot_download("BiliSakura/EO-VAE")
+sys.path.insert(0, model_dir)
+from eo_vae import EOVAEModel, WAVELENGTHS
 
-# Load from HuggingFace (no conversion needed)
-vae = EOVAEDiffusersModel.from_pretrained(
-    "BiliSakura/EO-VAE",
-    torch_dtype=torch.float32,
-    device="cpu",
-)
-
-# Example: S2 RGB
+vae = EOVAEModel.from_pretrained(model_dir, torch_dtype=torch.float32, device="cpu")
 x = torch.randn(1, 3, 256, 256)
 wvs = torch.tensor(WAVELENGTHS["S2RGB"], dtype=torch.float32)
-
 with torch.no_grad():
     recon = vae.reconstruct(x, wvs)
     z = vae.encode_spatial_normalized(x, wvs)  # [1, 32, 32, 32]
