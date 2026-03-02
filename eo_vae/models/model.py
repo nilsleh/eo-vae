@@ -49,21 +49,13 @@ class WavelengthConditioner(nn.Module):
             nn.Linear(embed_dim, embed_dim),
         )
 
-    def forward(self, wvs: Tensor, batch_size: int) -> Tensor:
-        # wvs: [N] or [B, N]
-        if wvs.dim() == 1:
-            wvs = wvs.unsqueeze(0).repeat(batch_size, 1)  # [B, N]
-
-        # 1. Embed each wavelength: [B, N, D]
-        emb = get_1d_sincos_pos_embed(self.embed_dim, wvs)
-
-        # 2. Global Average Pooling over spectral dimension: [B, D]
-        # This creates a "fingerprint" of the active modality
-        emb = emb.mean(dim=1)
-
-        # 3. Project to Style Vector
-        style = self.mlp(emb)
-        return style
+    def forward(self, wvs: Tensor) -> Tensor:
+        # wvs: [N] — same wavelengths for all samples in the batch
+        emb = get_1d_sincos_pos_embed(
+            self.embed_dim, wvs.flatten().unsqueeze(0)
+        )  # [1, N, D]
+        emb = emb.mean(dim=1)  # [1, D]
+        return self.mlp(emb)  # [1, D]
 
 
 class Encoder(nn.Module):
@@ -88,14 +80,15 @@ class Encoder(nn.Module):
 
         self.use_dynamic_ops = use_dynamic_ops
 
-        # --- NEW: Setup Conditioning ---
-        # Check if AdaIN is requested via kwargs
         self.use_adain = False
         self.cond_dim = None
 
         if self.use_dynamic_ops:
             dynamic_kwargs = dynamic_conv_kwargs.copy() if dynamic_conv_kwargs else {}
             self.use_adain = dynamic_kwargs.pop('use_adain', False)
+            dynamic_kwargs.pop(
+                'use_ada_zero', None
+            )  # removed feature, ignore if present
 
             if self.use_adain:
                 self.cond_dim = 512
@@ -171,15 +164,13 @@ class Encoder(nn.Module):
         if self.use_dynamic_ops:
             assert wvs is not None, 'wvs must be provided for Dynamic Encoder'
             hs = [self.conv_in(x, wvs)]
-
             if self.use_adain:
-                emb = self.conditioner(wvs, x.shape[0])
+                emb = self.conditioner(wvs)
         else:
             hs = [self.conv_in(x)]
 
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
-                # Pass embedding to ResnetBlock
                 h = self.down[i_level].block[i_block](hs[-1], emb)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
@@ -201,13 +192,9 @@ class Encoder(nn.Module):
     def load_flux_weights(self, state_dict, strict=True):
         own_state = self.state_dict()
         ignore_layers = ['conv_in'] if self.use_dynamic_ops else []
-        # Also ignore conditioner and projection layers if using AdaIN
-        if self.use_adain:
-            ignore_layers.extend(['conditioner', 'emb_proj'])
 
         for name, param in state_dict.items():
             if self.use_dynamic_ops and any(x in name for x in ignore_layers):
-                # Skip dynamic/adain layers
                 continue
             if name not in own_state:
                 if strict:
@@ -243,13 +230,15 @@ class Decoder(nn.Module):
         self.resolution = resolution
         self.use_dynamic_ops = use_dynamic_ops
 
-        # --- NEW: Setup Conditioning ---
         self.use_adain = False
         self.cond_dim = None
 
         if self.use_dynamic_ops:
             dynamic_kwargs = dynamic_conv_kwargs.copy() if dynamic_conv_kwargs else {}
             self.use_adain = dynamic_kwargs.pop('use_adain', False)
+            dynamic_kwargs.pop(
+                'use_ada_zero', None
+            )  # removed feature, ignore if present
 
             if self.use_adain:
                 self.cond_dim = 512
@@ -299,13 +288,7 @@ class Decoder(nn.Module):
         )
 
         if self.use_dynamic_ops:
-            # Re-fetch kwargs because we might have popped from a copy above
-            dynamic_kwargs = dynamic_conv_kwargs.copy() if dynamic_conv_kwargs else {}
-            # Remove use_adain from kwargs passed to dynamic layers
-            dynamic_kwargs.pop('use_adain', None)
-
             dynamic_kwargs.pop('mode', 'conv')
-
             wv_planes = dynamic_kwargs.pop('wv_planes', 128)
             inter_dim = dynamic_kwargs.pop('inter_dim', 128)
 
@@ -332,7 +315,7 @@ class Decoder(nn.Module):
         emb = None
         if self.use_dynamic_ops and self.use_adain:
             assert wvs is not None
-            emb = self.conditioner(wvs, z.shape[0])
+            emb = self.conditioner(wvs)
 
         h = self.mid.block_1(h, emb)
         h = self.mid.attn_1(h)
@@ -362,8 +345,6 @@ class Decoder(nn.Module):
     def load_flux_weights(self, state_dict, strict=True):
         own_state = self.state_dict()
         ignore_layers = ['conv_out'] if self.use_dynamic_ops else []
-        if self.use_adain:
-            ignore_layers.extend(['conditioner', 'emb_proj'])
 
         for name, param in state_dict.items():
             if self.use_dynamic_ops and any(x in name for x in ignore_layers):
@@ -375,4 +356,6 @@ class Decoder(nn.Module):
             except RuntimeError as e:
                 print(f'Error loading {name}: {e}')
 
-        print(f'Weights loaded. Dynamic Mode: {self.use_dynamic_ops}')
+        print(
+            f'Weights loaded. Dynamic Mode: {self.use_dynamic_ops}, AdaIN: {self.use_adain}'
+        )

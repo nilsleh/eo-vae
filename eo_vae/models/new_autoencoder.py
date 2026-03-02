@@ -161,6 +161,25 @@ class EOFluxVAE(LightningModule):
                 p.requires_grad = True
             print('  -> Decoder conv_out: TRAINABLE')
 
+        # Unfreeze adain conditioning (if present)
+        if getattr(self.encoder, 'use_adain', False):
+            for p in self.encoder.conditioner.parameters():
+                p.requires_grad = True
+            for m in self.encoder.modules():
+                if hasattr(m, 'emb_proj'):
+                    for p in m.emb_proj.parameters():
+                        p.requires_grad = True
+            print('  -> Encoder conditioner + emb_proj: TRAINABLE')
+
+        if getattr(self.decoder, 'use_adain', False):
+            for p in self.decoder.conditioner.parameters():
+                p.requires_grad = True
+            for m in self.decoder.modules():
+                if hasattr(m, 'emb_proj'):
+                    for p in m.emb_proj.parameters():
+                        p.requires_grad = True
+            print('  -> Decoder conditioner + emb_proj: TRAINABLE')
+
     def _load_checkpoint(self, path: str, ignore_keys: list[str]) -> None:
         """Load pretrained weights from checkpoint.
 
@@ -261,12 +280,25 @@ class EOFluxVAE(LightningModule):
             allowed_missing.append('encoder.conv_in')
         if self.decoder.use_dynamic_ops:
             allowed_missing.append('decoder.conv_out')
+        if getattr(self.encoder, 'use_adain', False):
+            allowed_missing.append('encoder.conditioner')
+        if getattr(self.decoder, 'use_adain', False):
+            allowed_missing.append('decoder.conditioner')
         allowed_missing.extend(ignore_keys)
+
+        # emb_proj lives inside ResnetBlocks; allow it missing when adain is enabled
+        # (new params not present in Flux/distilled checkpoints)
+        adain_active = getattr(self.encoder, 'use_adain', False) or getattr(
+            self.decoder, 'use_adain', False
+        )
 
         critical_missing = []
         for k in missing_keys:
-            if not any(k.startswith(p) for p in allowed_missing):
-                critical_missing.append(k)
+            if any(k.startswith(p) for p in allowed_missing):
+                continue
+            if adain_active and 'emb_proj' in k:
+                continue
+            critical_missing.append(k)
 
         if critical_missing:
             raise RuntimeError(
@@ -320,10 +352,15 @@ class EOFluxVAE(LightningModule):
         sample_posterior: bool = True,
         scale: float | tuple[float, float] | None = None,
         angle: int | None = None,
-    ) -> tuple[Tensor, DiagonalGaussianDistribution]:
+        return_z: bool = False,
+    ) -> (
+        tuple[Tensor, DiagonalGaussianDistribution]
+        | tuple[Tensor, DiagonalGaussianDistribution, Tensor]
+    ):
         """Full forward pass: encode -> transform -> decode."""
         posterior = self.encode(x, wvs)
         z = posterior.sample() if sample_posterior else posterior.mode()
+        z_raw = z  # save before EQ-VAE transforms
 
         # EQ-VAE transformations
         if scale is not None:
@@ -344,6 +381,8 @@ class EOFluxVAE(LightningModule):
                 z_normalized = self.noising(z_normalized)
 
         reconstruction = self.decode(z_normalized, wvs)
+        if return_z:
+            return reconstruction, posterior, z_raw
         return reconstruction, posterior
 
     @torch.no_grad()
@@ -479,7 +518,9 @@ class EOFluxVAE(LightningModule):
                 if self.anisotropic
                 else random.choice(scale_bins)
             )
-            recon, posterior = self.forward(images, wvs, scale=scale, angle=angle)
+            recon, posterior, z = self.forward(
+                images, wvs, scale=scale, angle=angle, return_z=True
+            )
             with torch.no_grad():
                 target_images = F.interpolate(
                     images, size=recon.shape[-2:], mode='area'
@@ -489,7 +530,7 @@ class EOFluxVAE(LightningModule):
         elif random.random() < self.p_prior_s:
             # Prior preservation mode
             scale = random.choice(scale_bins)
-            recon, posterior = self.forward(images, wvs, scale=scale)
+            recon, posterior, z = self.forward(images, wvs, scale=scale, return_z=True)
             with torch.no_grad():
                 target_images = F.interpolate(
                     images, size=recon.shape[-2:], mode='area'
@@ -497,7 +538,7 @@ class EOFluxVAE(LightningModule):
 
         else:
             # Standard reconstruction
-            recon, posterior = self.forward(images, wvs)
+            recon, posterior, z = self.forward(images, wvs, return_z=True)
 
         # === Generator Training ===
         opt_gen.zero_grad()
@@ -512,6 +553,8 @@ class EOFluxVAE(LightningModule):
             global_step=self.global_step,
             last_layer=self.get_last_layer(),
             split='train',
+            posterior=posterior,
+            z=z,
         )
 
         self.manual_backward(gen_loss)
@@ -563,7 +606,7 @@ class EOFluxVAE(LightningModule):
         images = batch[self.image_key]
         wvs = batch['wvs']
 
-        recon, _ = self.forward(images, wvs)
+        recon, posterior, z = self.forward(images, wvs, return_z=True)
 
         val_loss, log_dict = self.loss_fn(
             inputs=images,
@@ -573,6 +616,8 @@ class EOFluxVAE(LightningModule):
             global_step=self.global_step,
             last_layer=None,
             split='val',
+            posterior=posterior,
+            z=z,
         )
 
         self.log_dict(

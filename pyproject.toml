@@ -19,16 +19,12 @@ maintainers = [
 
 
 dependencies = [
-    "torch>=2.1.2",
-    "torchvision==0.16.2",
-    "numpy==1.26.4",
-    "lightning>=2.4.0",
+    "torchgeo",
     "wandb",
     "ruff",
     "python-dotenv",
     "omegaconf",
     "hydra-core",
-    "torchgeo @ git+https://github.com/microsoft/torchgeo.git",
 ]
 
 
