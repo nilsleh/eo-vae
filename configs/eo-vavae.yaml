@@ -48,17 +48,17 @@ model:
 
     # # --- VF distance-matrix + cosine alignment loss ---
     # Requires aux_feature passed to forward(), or dofa_net set below
-    distmat_weight: 1.0   # weight for cosine distance-matrix alignment
-    distmat_margin: 0.0   # relu margin for distance-matrix term
-    cos_weight: 1.0       # weight for direct cosine alignment term
-    cos_margin: 0.0       # relu margin for cosine term
-    vf_start_step: 2000
-    vf_spatial_size: 16   # DOFA features and z are resized to this before VF loss
+    # distmat_weight: 1.0   # weight for cosine distance-matrix alignment
+    # distmat_margin: 0.0   # relu margin for distance-matrix term
+    # cos_weight: 1.0       # weight for direct cosine alignment term
+    # cos_margin: 0.0       # relu margin for cosine term
+    # vf_start_step: 2000
+    # vf_spatial_size: 16   # DOFA features and z are resized to this before VF loss
 
-    dofa_net:
-      _target_: eo_vae.models.dofa.dofav2_base_patch14_224
-      model_bands: ["RED", "GREEN", "BLUE"]
-      ckpt_data: /mnt/SSD2/nils/eo-rae/eo_rae/models/dofav2/dofav2_vit_base_e150.pth
+    # dofa_net:
+    #   _target_: eo_vae.models.dofa.dofav2_base_patch14_224
+    #   model_bands: ["RED", "GREEN", "BLUE"]
+    #   ckpt_data: /mnt/SSD2/nils/eo-rae/eo_rae/models/dofav2/dofav2_vit_base_e150.pth
 
 
   encoder:
