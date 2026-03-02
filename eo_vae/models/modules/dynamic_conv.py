@@ -483,7 +483,7 @@ class DynamicConv(nn.Module):
         dyn_weight = weight.view(
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
         )
-        dyn_weight = dyn_weight.permute([3, 0, 1, 2])
+        dyn_weight = dyn_weight.permute([3, 0, 1, 2]).contiguous()
 
         if self.use_weight_standardization:
             dyn_weight = self.weight_standardization(dyn_weight)
@@ -514,7 +514,7 @@ class DynamicConv(nn.Module):
         dynamic_weight = weight.view(
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
         )
-        dynamic_weight = dynamic_weight.permute([3, 0, 1, 2])
+        dynamic_weight = dynamic_weight.permute([3, 0, 1, 2]).contiguous()
 
         if self.use_weight_standardization:
             dynamic_weight = self.weight_standardization(dynamic_weight)
@@ -650,7 +650,7 @@ class DynamicConv_decoder(nn.Module):
         dyn_weight = weight.view(
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
         )
-        dyn_weight = dyn_weight.permute([0, 3, 1, 2])
+        dyn_weight = dyn_weight.permute([0, 3, 1, 2]).contiguous()
 
         if self.use_weight_standardization:
             dyn_weight = self.weight_standardization(dyn_weight)
@@ -684,7 +684,7 @@ class DynamicConv_decoder(nn.Module):
         dynamic_weight = weight.view(
             inplanes, self.kernel_size, self.kernel_size, self.embed_dim
         )
-        dynamic_weight = dynamic_weight.permute([0, 3, 1, 2])
+        dynamic_weight = dynamic_weight.permute([0, 3, 1, 2]).contiguous()
 
         if self.use_weight_standardization:
             dynamic_weight = self.weight_standardization(dynamic_weight)

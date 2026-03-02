@@ -621,7 +621,7 @@ class EOFluxVAE(LightningModule):
         )
 
         self.log_dict(
-            log_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True
+            log_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True
         )
         return val_loss
 
