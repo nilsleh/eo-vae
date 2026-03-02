@@ -474,12 +474,11 @@ class EOFluxVAE(LightningModule):
 
         # Learning rate schedulers
         if all([self.final_lr, self.warmup_epochs, self.decay_end_epoch]):
-            # estimated_stepping_batches divides by num_devices internally, but global_step
-            # increments once per local optimizer step (per rank) — so we multiply back to
-            # match the actual global_step count and avoid the LR cycling on multi-GPU.
-            num_devices = max(1, self.trainer.num_devices)
+            # estimated_stepping_batches reflects the actual optimizer step count
+            # (DistributedSampler already divides data by num_devices, and global_step
+            # increments once per optimizer step regardless of num_devices).
             steps_per_epoch = (
-                self.trainer.estimated_stepping_batches // self.trainer.max_epochs * num_devices
+                self.trainer.estimated_stepping_batches // self.trainer.max_epochs
             )
             num_warmup = self.warmup_epochs * steps_per_epoch
             num_total = self.decay_end_epoch * steps_per_epoch
