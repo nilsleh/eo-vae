@@ -1,0 +1,112 @@
+
+experiment:
+  experiment_name: "eo-vavae"
+  exp_dir: "results/exps/eo-vae/vavae"
+
+wandb:
+  project: eo-vae
+  entity: nleh
+  mode: online
+
+model:
+  _target_: eo_vae.models.new_autoencoder.EOFluxVAE
+
+  freeze_body: False
+
+  base_lr: 1e-4
+  final_lr: 2e-5
+  warmup_epochs: 1
+  decay_end_epoch: ${trainer.max_epochs}
+  clip_grad: 1.0
+  noise_tau: 0.0
+  latent_noise_p: 0.0
+
+  # Loss configuration
+  loss_fn:
+    _target_: eo_vae.models.modules.vavae_loss.EOVAVAELoss
+
+    # --- Reconstruction loss (passed to EOConsistencyLoss) ---
+    rec_loss_type: "char"        # 'l1' or 'char' (Charbonnier)
+    pixel_weight: 1.0
+
+    # Optional perceptual / structural losses (all off by default)
+    msssim_weight: 1.0
+    msssim_start_step: 2000
+    spectral_weight: 0.0        # SAM spectral angle loss
+    spectral_start_step: 0
+    spatial_weight: 0.0         # Gradient difference loss
+    spatial_start_step: 0
+    freq_weight: 0.0            # Focal frequency loss
+    freq_start_step: 0
+    feature_weight: 0.0         # DOFA semantic feature loss
+    feature_start_step: 0
+    patch_factor: 2             # Patch factor for focal freq loss
+    ffl_alpha: 1.0              # Alpha for focal freq loss
+
+    # --- KL regularization ---
+    kl_weight: 1.0e-6
+
+    # --- VF distance-matrix + cosine alignment loss ---
+    # Requires aux_feature passed to forward(), or dofa_net set below
+    distmat_weight: 0.0   # weight for cosine distance-matrix alignment
+    distmat_margin: 0.0   # relu margin for distance-matrix term
+    cos_weight: 0.0       # weight for direct cosine alignment term
+    cos_margin: 0.0       # relu margin for cosine term
+    vf_start_step: 0
+    vf_spatial_size: 16   # DOFA features and z are resized to this before VF loss
+
+    # dofa_net: null  # Set to a _target_ block to enable feature_weight / VF loss
+
+  encoder:
+    _target_: eo_vae.models.Encoder
+    z_channels: 32
+    resolution: 256
+    in_channels: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]
+    num_res_blocks: 2
+    use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 4
+      wv_planes: 256
+
+  decoder:
+    _target_: eo_vae.models.Decoder
+    z_channels: 32
+    resolution: 256
+    out_ch: 3
+    ch: 128
+    ch_mult: [ 1,2,4,4 ]
+    num_res_blocks: 2
+    use_dynamic_ops: True
+    dynamic_conv_kwargs:
+      num_layers: 4
+      wv_planes: 256
+
+
+datamodule:
+  _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
+  data_path: "/mnt/SSD2/nils/datasets/terramesh"
+  modalities: ["S2L2A", "S1RTC", "S1GRD", "S2RGB"]
+  batch_size: 16
+  eval_batch_size: 32
+  num_workers: 4
+  train_collate_mode: "random"
+  val_collate_mode: "S2L2A"
+  normalize: true
+  norm_method: zscore
+  norm_scheme: custom
+  return_metadata: True
+  target_size: [256, 256]
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 100
+  accelerator: gpu
+  precision: 16-mixed
+  limit_val_batches: 100
+  limit_train_batches: 2000
+  devices: [5]
+  log_every_n_steps: 100
+
+flux_chkpt: /mnt/SSD2/nils/eo-vae/checkpoints/ae.safetensors
