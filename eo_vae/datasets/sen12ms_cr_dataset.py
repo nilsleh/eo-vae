@@ -279,7 +279,14 @@ class SEN12MSCRDataset(Dataset):
                 if not (os.path.isfile(s2_path) and os.path.isfile(s2c_path)):
                     continue
 
-                paths.append({'s1': s1_path, 's2': s2_path, 's2_cloudy': s2c_path})
+                # e.g. 'ROIs1158_spring_s1_106_p1.tif' -> 'ROIs1158_spring_106_p1'
+                patch_id = fname.replace('_s1_', '_').replace('.tif', '')
+                paths.append({
+                    's1': s1_path,
+                    's2': s2_path,
+                    's2_cloudy': s2c_path,
+                    'patch_id': patch_id,
+                })
 
         return paths
 
@@ -315,6 +322,7 @@ class SEN12MSCRDataset(Dataset):
             's2_cloudy': s2_cloudy,                         # (13, H, W)
             's1_wvs': torch.tensor(S1_WAVELENGTHS),         # (2,)
             's2_wvs': torch.tensor(S2_WAVELENGTHS),         # (13,)
+            'patch_id': entry['patch_id'],                  # str
         }
 
 
