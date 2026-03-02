@@ -577,6 +577,77 @@ def deterministic_modality_collate_fn(
     return collate
 
 
+def paired_modality_collate_fn(
+    source_modality,
+    target_modality,
+    normalize=True,
+    norm_scheme='legacy',
+    target_size=(224, 224),
+):
+    """Collate function that returns both source and target modalities paired.
+
+    Used for cross-modal translation evaluation, where aligned samples from
+    two modalities are needed in the same batch.
+
+    Args:
+        source_modality: Source modality name (e.g., 'S2L2A')
+        target_modality: Target modality name (e.g., 'S1RTC')
+        normalize: Whether to apply normalization
+        norm_scheme: 'legacy' for original z-score, 'custom' for new normalization
+        target_size: Target image size for interpolation
+
+    Returns:
+        Callable collate function producing dicts with keys:
+        src_image, tgt_image, src_wvs, tgt_wvs, src_modality, tgt_modality
+    """
+    src_normalizer = NormalizerFactory.create(source_modality, norm_scheme)
+    tgt_normalizer = NormalizerFactory.create(target_modality, norm_scheme)
+
+    def _get_images(batch, modality):
+        if modality in batch:
+            images = batch[modality]
+        elif 'image' in batch:
+            images = batch['image']
+        else:
+            raise ValueError(
+                f'Modality {modality} not found in batch. Available: {batch.keys()}'
+            )
+        if isinstance(images, np.ndarray):
+            images = torch.from_numpy(images).float()
+        else:
+            images = images.float()
+        return images
+
+    def collate(batch):
+        src_images = _get_images(batch, source_modality)
+        tgt_images = _get_images(batch, target_modality)
+
+        if normalize:
+            src_images = src_normalizer(src_images)
+            tgt_images = tgt_normalizer(tgt_images)
+
+        if target_size is not None:
+            if src_images.shape[-2:] != target_size:
+                src_images = torch.nn.functional.interpolate(
+                    src_images, size=target_size, mode='bilinear', align_corners=False
+                )
+            if tgt_images.shape[-2:] != target_size:
+                tgt_images = torch.nn.functional.interpolate(
+                    tgt_images, size=target_size, mode='bilinear', align_corners=False
+                )
+
+        return {
+            'src_image': src_images,
+            'tgt_image': tgt_images,
+            'src_wvs': torch.FloatTensor(WAVELENGTHS[source_modality]),
+            'tgt_wvs': torch.FloatTensor(WAVELENGTHS[target_modality]),
+            'src_modality': source_modality,
+            'tgt_modality': target_modality,
+        }
+
+    return collate
+
+
 # =============================================================================
 # DataModule
 # =============================================================================
@@ -849,7 +920,7 @@ class RunningStatsButFast(torch.nn.Module):
             dims: The dimensions of your input to calculate the mean and variance
                 over. In the above example, this should be [0, 2, 3].
         """
-        super(RunningStatsButFast, self).__init__()
+        super().__init__()
         self.register_buffer('mean', torch.zeros(shape))
         self.register_buffer('var', torch.ones(shape))
         self.register_buffer('std', torch.ones(shape))

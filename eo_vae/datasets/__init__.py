@@ -1,4 +1,6 @@
 # from .eodataset import get_flair_dataloader
+from .combined_datamodule import CombinedEODataModule
+from .satlas_naip import SatlasNAIPDataModule, SatlasNAIPDataset
 from .terramesh_datamodule import TerraMeshDataModule
 
-__all__ = ('TerraMeshDataModule',)
+__all__ = ('TerraMeshDataModule', 'SatlasNAIPDataModule', 'SatlasNAIPDataset', 'CombinedEODataModule')
