@@ -1,7 +1,7 @@
 
 experiment:
   experiment_name: "eo-vavae"
-  exp_dir: "results/exps/eo-vae/vavae"
+  exp_dir: "results/exps/eo-vae/eo-vae-ada"
 
 wandb:
   project: eo-vae
@@ -32,30 +32,34 @@ model:
     # Optional perceptual / structural losses (all off by default)
     msssim_weight: 1.0
     msssim_start_step: 2000
-    spectral_weight: 0.0        # SAM spectral angle loss
-    spectral_start_step: 0
-    spatial_weight: 0.0         # Gradient difference loss
-    spatial_start_step: 0
-    freq_weight: 0.0            # Focal frequency loss
-    freq_start_step: 0
-    feature_weight: 0.0         # DOFA semantic feature loss
-    feature_start_step: 0
-    patch_factor: 2             # Patch factor for focal freq loss
-    ffl_alpha: 1.0              # Alpha for focal freq loss
+    # spectral_weight: 0.0        # SAM spectral angle loss
+    # spectral_start_step: 0
+    # spatial_weight: 0.0         # Gradient difference loss
+    # spatial_start_step: 0
+    # freq_weight: 0.0            # Focal frequency loss
+    # freq_start_step: 0
+    # feature_weight: 0.0         # DOFA semantic feature loss
+    # feature_start_step: 0
+    # patch_factor: 2             # Patch factor for focal freq loss
+    # ffl_alpha: 1.0              # Alpha for focal freq loss
 
     # --- KL regularization ---
-    kl_weight: 1.0e-6
+    # kl_weight: 1.0e-6
 
-    # --- VF distance-matrix + cosine alignment loss ---
+    # # --- VF distance-matrix + cosine alignment loss ---
     # Requires aux_feature passed to forward(), or dofa_net set below
-    distmat_weight: 0.0   # weight for cosine distance-matrix alignment
+    distmat_weight: 1.0   # weight for cosine distance-matrix alignment
     distmat_margin: 0.0   # relu margin for distance-matrix term
-    cos_weight: 0.0       # weight for direct cosine alignment term
+    cos_weight: 1.0       # weight for direct cosine alignment term
     cos_margin: 0.0       # relu margin for cosine term
-    vf_start_step: 0
+    vf_start_step: 2000
     vf_spatial_size: 16   # DOFA features and z are resized to this before VF loss
 
-    # dofa_net: null  # Set to a _target_ block to enable feature_weight / VF loss
+    dofa_net:
+      _target_: eo_vae.models.dofa.dofav2_base_patch14_224
+      model_bands: ["RED", "GREEN", "BLUE"]
+      ckpt_data: /mnt/SSD2/nils/eo-rae/eo_rae/models/dofav2/dofav2_vit_base_e150.pth
+
 
   encoder:
     _target_: eo_vae.models.Encoder
@@ -69,6 +73,8 @@ model:
     dynamic_conv_kwargs:
       num_layers: 4
       wv_planes: 256
+      use_adain: true
+      cond_dim: 256
 
   decoder:
     _target_: eo_vae.models.Decoder
@@ -82,31 +88,35 @@ model:
     dynamic_conv_kwargs:
       num_layers: 4
       wv_planes: 256
+      use_adain: true
+      cond_dim: 256
 
 
 datamodule:
   _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
   data_path: "/mnt/SSD2/nils/datasets/terramesh"
-  modalities: ["S2L2A", "S1RTC", "S1GRD", "S2RGB"]
-  batch_size: 16
-  eval_batch_size: 32
+  modalities: ["S2L2A", "S1RTC", "S2RGB"]
+  batch_size: 8
+  eval_batch_size: 16
   num_workers: 4
   train_collate_mode: "random"
   val_collate_mode: "S2L2A"
   normalize: true
   norm_method: zscore
-  norm_scheme: custom
+  norm_scheme: legacy
   return_metadata: True
   target_size: [256, 256]
 
 trainer:
   _target_: lightning.Trainer
-  max_epochs: 100
+  max_epochs: 400
   accelerator: gpu
   precision: 16-mixed
   limit_val_batches: 100
   limit_train_batches: 2000
-  devices: [5]
+  # strategy: ddp
+  devices: [4, 5, 6, 7]
+  # devices: [4]
   log_every_n_steps: 100
 
 flux_chkpt: /mnt/SSD2/nils/eo-vae/checkpoints/ae.safetensors

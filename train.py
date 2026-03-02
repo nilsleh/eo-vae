@@ -88,6 +88,7 @@ def run_experiment(config, distilled_ckpt, vae_ckpt=None, debug: bool = False) -
             }
             if comp_dict:
                 keys = component.load_state_dict(comp_dict, strict=False)
+                print(keys.missing_keys)
                 print(
                     f'Loaded {prefix[:-1]}: Missing {len(keys.missing_keys)}, Unexpected {len(keys.unexpected_keys)}'
                 )

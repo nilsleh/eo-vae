@@ -86,12 +86,13 @@ class Encoder(nn.Module):
         if self.use_dynamic_ops:
             dynamic_kwargs = dynamic_conv_kwargs.copy() if dynamic_conv_kwargs else {}
             self.use_adain = dynamic_kwargs.pop('use_adain', False)
+            self.cond_dim = dynamic_kwargs.pop('cond_dim', None)
             dynamic_kwargs.pop(
                 'use_ada_zero', None
             )  # removed feature, ignore if present
 
             if self.use_adain:
-                self.cond_dim = 512
+                self.cond_dim = 128
                 self.conditioner = WavelengthConditioner(embed_dim=self.cond_dim)
 
             dynamic_kwargs.pop('mode', 'conv')
@@ -236,12 +237,12 @@ class Decoder(nn.Module):
         if self.use_dynamic_ops:
             dynamic_kwargs = dynamic_conv_kwargs.copy() if dynamic_conv_kwargs else {}
             self.use_adain = dynamic_kwargs.pop('use_adain', False)
+            self.cond_dim = dynamic_kwargs.pop('cond_dim', None)
             dynamic_kwargs.pop(
                 'use_ada_zero', None
             )  # removed feature, ignore if present
 
             if self.use_adain:
-                self.cond_dim = 512
                 self.conditioner = WavelengthConditioner(embed_dim=self.cond_dim)
 
         block_in = ch * ch_mult[self.num_resolutions - 1]
