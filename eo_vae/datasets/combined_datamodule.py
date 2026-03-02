@@ -4,8 +4,8 @@ import torch
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
-from .satlas_naip import SatlasNAIPDataModule, _apply_batch_augmentations
-from .terramesh_datamodule import TerraMeshDataModule
+from eo_vae.datasets.satlas_naip import SatlasNAIPDataModule, _apply_batch_augmentations
+from eo_vae.datasets.terramesh_datamodule import TerraMeshDataModule
 
 
 class CombinedEOIterableDataset(IterableDataset):
