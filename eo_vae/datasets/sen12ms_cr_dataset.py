@@ -257,13 +257,14 @@ class SEN12MSCRDataset(Dataset):
             roi_col, scene_id = roi_str.split('/')
             season = ROI_SEASON_MAP[roi_col]
 
-            s1_dir = os.path.join(self.root, season, f's1_{scene_id}')
-            s2_dir = os.path.join(self.root, season, f's2_{scene_id}')
-            s2c_dir = os.path.join(self.root, season, f's2_cloudy_{scene_id}')
+            s1_dir = os.path.join(self.root, season + "_s1", f's1_{scene_id}')
+            s2_dir = os.path.join(self.root, season + "_s2", f's2_{scene_id}')
+            s2c_dir = os.path.join(self.root, season + "_s2_cloudy", f's2_cloudy_{scene_id}')
 
+    
             if not os.path.isdir(s1_dir):
                 continue
-
+            
             for fname in sorted(os.listdir(s1_dir)):
                 if not fname.endswith('.tif'):
                     continue

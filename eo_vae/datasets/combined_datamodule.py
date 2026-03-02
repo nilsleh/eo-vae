@@ -98,3 +98,62 @@ class CombinedEODataModule(LightningDataModule):
 
     def val_dataloader(self):
         return self.terramesh_dm.val_dataloader()
+
+
+
+#  data_path: "/mnt/SSD2/nils/datasets/terramesh"
+#   modalities: ["S2L2A", "S1RTC", "S2RGB"]
+#   batch_size: 8
+#   eval_batch_size: 16
+#   num_workers: 4
+#   train_collate_mode: "random"
+#   val_collate_mode: "S2L2A"
+#   normalize: true
+#   norm_method: zscore
+#   norm_scheme: legacy
+#   return_metadata: True
+#   target_size: [256, 256]
+
+# dm = SatlasNAIPDataModule(
+#     data_path='/mnt/SSD2/nils/datasets/satlas_pretrain/ds/',
+#     batch_size=16,
+#     eval_batch_size=32,
+#     num_workers=4,
+#     normalize=False,
+#     target_size=(256, 256),
+#     val_fraction=0.1,
+#     seed=42,
+# )
+
+# combined = CombinedEODataModule(
+#     terramesh={
+#         "data_path": "/mnt/SSD2/nils/datasets/terramesh",
+#         "modalities": ["S2L2A", "S1RTC", "S2RGB"],
+#         "batch_size": 8,
+#         "eval_batch_size": 16,
+#         "normalize": True,
+#         "norm_method": "zscore",
+#         "norm_scheme": "legacy",
+#         "return_metadata": True,
+#         "target_size": (256, 256),
+#     },
+#     naip={
+#         "data_path": "/mnt/SSD2/nils/datasets/satlas_pretrain/ds/",
+#         "batch_size": 16,
+#         "eval_batch_size": 32,
+#         "normalize": True,
+#         "target_size": (256, 256),
+#         "val_fraction": 0.1,
+#         "seed": 42,
+#     },
+#     p_naip=0.25,
+#     num_workers=4,
+# )
+
+# combined.setup()
+# train_batch = next(iter(combined.train_dataloader()))
+
+# import pdb
+# pdb.set_trace()
+
+# print(0)
