@@ -474,7 +474,7 @@ class EOFluxVAE(LightningModule):
 
         # Learning rate schedulers
         if all([self.final_lr, self.warmup_epochs, self.decay_end_epoch]):
-            steps_per_epoch = 2000  # Estimate
+            steps_per_epoch = self.trainer.estimated_stepping_batches // self.trainer.max_epochs
             num_warmup = self.warmup_epochs * steps_per_epoch
             num_total = self.decay_end_epoch * steps_per_epoch
 
