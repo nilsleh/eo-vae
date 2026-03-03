@@ -174,17 +174,16 @@ def main():
                 (s2, recon_s2, 's2'),
                 (s2_cloudy, recon_s2_cloudy, 's2_cloudy'),
             ]:
-                pred = torch.clamp(recon, -1, 1) * 0.5 + 0.5
-                gt = torch.clamp(images, -1, 1) * 0.5 + 0.5
-                pred = pred.contiguous()
-                gt = gt.contiguous()
+                pred = recon.contiguous()
+                gt = images.contiguous()
+                data_range = (gt.max() - gt.min()).item()
 
                 metrics[mod]['RMSE'].append(mean_squared_error(pred, gt, squared=False).item())
                 metrics[mod]['PSNR'].append(
-                    peak_signal_noise_ratio(pred, gt, data_range=1.0).item()
+                    peak_signal_noise_ratio(pred, gt, data_range=data_range).item()
                 )
                 metrics[mod]['SSIM'].append(
-                    structural_similarity_index_measure(pred, gt, data_range=1.0).item()
+                    structural_similarity_index_measure(pred, gt, data_range=data_range).item()
                 )
                 metrics[mod]['SAM'].append(spectral_angle_mapper(pred, gt).item())
 
