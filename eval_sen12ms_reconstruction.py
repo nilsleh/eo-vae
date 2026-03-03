@@ -39,8 +39,8 @@ _S1_STD = [4.278, 4.346]
 def reconstruct(model, images, wvs):
     """Encode and decode with the same wavelengths (identity translation)."""
     z = model.encode_to_latent(images, wvs[0])
-    z_norm = model._normalize_latent(z)
-    return model.decode(z_norm, wvs[0])
+    # z_norm = model._normalize_latent(z)
+    return model.decode(z, wvs[0])
 
 
 def _unnorm_s2(tensor):
@@ -106,7 +106,7 @@ def visualize_batch(images, recons, modality, output_dir, batch_idx):
     plt.suptitle(f'Reconstruction: {modality}', fontsize=14)
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, f'viz_{modality}_batch{batch_idx}.png')
-    fig.savefig(save_path, bbox_inches='tight', dpi=150)
+    fig.savefig(save_path, bbox_inches='tight', dpi=50)
     plt.close(fig)
     print(f'Saved visualization to {save_path}')
 

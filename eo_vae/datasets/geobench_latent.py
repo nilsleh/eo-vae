@@ -81,7 +81,8 @@ class GeobenchLatentDataset(Dataset):
             feature = F.adaptive_avg_pool2d(feature.unsqueeze(0), 1).squeeze()  # [32]
         elif self.pool == 'max':
             feature = F.adaptive_max_pool2d(feature.unsqueeze(0), 1).squeeze()  # [32]
-        # 'flatten': keep [32, H, W]
+        elif self.pool == 'flatten':
+            feature = feature.flatten()  # [32*H*W]
 
         return {'feature': feature, 'label': label}
 
@@ -126,6 +127,9 @@ class GeobenchLatentDataModule(LightningDataModule):
             self.root, 'test', normalize=self.normalize, pool=self.pool
         )
         self.num_classes = self.train_dataset.num_classes
+        # Infer feat_dim from one sample so the train script can use it
+        sample = self.train_dataset[0]['feature']
+        self.feat_dim = sample.numel()
 
     def train_dataloader(self):
         return DataLoader(
