@@ -28,9 +28,8 @@ def _apply_batch_augmentations(images: torch.Tensor) -> torch.Tensor:
     return images
 
 
-# Approximate NAIP 8-bit statistics (uint8 range 0-255)
-NAIP_MEAN = [110.0, 105.0, 90.0, 140.0]  # R, G, B, NIR
-NAIP_STD = [50.0, 45.0, 40.0, 50.0]
+NAIP_MEAN = [102.7197, 112.3209,  92.9662, 140.7744]  # R, G, B, NIR
+NAIP_STD = [43.1395, 32.7670, 28.5774, 48.9748]
 
 
 # =============================================================================
@@ -147,7 +146,7 @@ class SatlasNAIPDataModule(LightningDataModule):
         self.target_size = target_size
 
     def setup(self, stage=None):
-        root = Path(self.data_path)
+        root = Path(self.data_path) / "naip"
 
         # Discover scenes that have both tci/ and ir/ subdirectories
         scenes = sorted(
@@ -218,3 +217,24 @@ class SatlasNAIPDataModule(LightningDataModule):
 
     def test_dataloader(self):
         return self.val_dataloader()
+
+
+
+
+
+
+# dm = SatlasNAIPDataModule(
+#     data_path='/mnt/SSD2/nils/datasets/satlas_pretrain/ds/',
+#     batch_size=16,
+#     eval_batch_size=32,
+#     num_workers=4,
+#     normalize=False,
+#     target_size=(256, 256),
+#     val_fraction=0.1,
+#     seed=42,
+# )
+# dm.setup()
+# train_batch = next(iter(dm.train_dataloader()))
+
+# import pdb
+# pdb.set_trace()

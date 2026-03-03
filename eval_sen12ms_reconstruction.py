@@ -38,12 +38,9 @@ _S1_STD = [4.278, 4.346]
 
 def reconstruct(model, images, wvs):
     """Encode and decode with the same wavelengths (identity translation)."""
-    z = model.encode(images, wvs).mode()
-    z_shuffled = rearrange(
-        z, '... c (i pi) (j pj) -> ... (c pi pj) i j', pi=model.ps[0], pj=model.ps[1]
-    )
-    z_norm = model._normalize_latent(z_shuffled)
-    return model.decode(z_norm, wvs)
+    z = model.encode_to_latent(images, wvs[0])
+    z_norm = model._normalize_latent(z)
+    return model.decode(z_norm, wvs[0])
 
 
 def _unnorm_s2(tensor):
