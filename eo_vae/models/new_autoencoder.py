@@ -560,6 +560,7 @@ class EOFluxVAE(LightningModule):
             split='train',
             posterior=posterior,
             z=z,
+            modality=batch.get('modality'),
         )
 
         self.manual_backward(gen_loss)
@@ -623,6 +624,7 @@ class EOFluxVAE(LightningModule):
             split='val',
             posterior=posterior,
             z=z,
+            modality=batch.get('modality'),
         )
 
         self.log_dict(

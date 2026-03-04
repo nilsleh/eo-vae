@@ -1,4 +1,3 @@
-import math
 
 import torch
 import torch.nn as nn
@@ -20,8 +19,8 @@ class EOVAVAELoss(nn.Module):
 
     aux_feature can be:
       - passed directly to forward() (pre-extracted features at matching resolution), or
-      - computed on the fly from a frozen dofa_net; z is resized to vf_spatial_size
-        to match the extracted features.
+      - computed on the fly from a frozen dino_net when modality == 'S2RGB';
+        z is resized to vf_spatial_size to match the extracted features.
     """
 
     def __init__(
@@ -41,7 +40,7 @@ class EOVAVAELoss(nn.Module):
         msssim_start_step: int = 0,
         patch_factor: int = 2,
         ffl_alpha: float = 1.0,
-        dofa_net: nn.Module = None,
+        dino_net: nn.Module = None,
         # KL
         kl_weight: float = 1e-6,
         # VF distance-matrix + cosine alignment loss
@@ -68,7 +67,7 @@ class EOVAVAELoss(nn.Module):
             msssim_start_step=msssim_start_step,
             patch_factor=patch_factor,
             ffl_alpha=ffl_alpha,
-            dofa_net=dofa_net,
+            dofa_net=None,
         )
 
         self.kl_weight = kl_weight
@@ -79,11 +78,7 @@ class EOVAVAELoss(nn.Module):
         self.vf_start_step = vf_start_step
         self.vf_spatial_size = vf_spatial_size
 
-        # Frozen DOFA reference for VF feature extraction
-        self.dofa_net = dofa_net
-        if dofa_net is not None:
-            for p in dofa_net.parameters():
-                p.requires_grad = False
+        self.dino_net = dino_net
 
     def forward(
         self,
@@ -95,6 +90,7 @@ class EOVAVAELoss(nn.Module):
         posterior=None,
         z: torch.Tensor = None,
         aux_feature: torch.Tensor = None,
+        modality: str | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, dict]:
         total_loss, logs = self.base_loss(
@@ -111,10 +107,9 @@ class EOVAVAELoss(nn.Module):
         # VF Loss
         vf_active = self.distmat_weight > 0 or self.cos_weight > 0
         if vf_active and z is not None and global_step >= self.vf_start_step:
-            # If aux_feature not provided, extract from DOFA and resize z to match
-            if aux_feature is None and self.dofa_net is not None:
-                aux_feature = self._extract_dofa_features(inputs, wvs)
-                # Resize z to (S, S) to match DOFA feature resolution
+            # Extract DINO features for S2RGB batches if no aux_feature provided
+            if aux_feature is None and self.dino_net is not None and modality == 'S2RGB':
+                aux_feature = self._extract_dino_features(inputs)
                 z_vf = F.interpolate(
                     z.float(), self.vf_spatial_size, mode='bilinear', align_corners=False
                 )
@@ -146,18 +141,12 @@ class EOVAVAELoss(nn.Module):
         logs[f'{split}/loss_total'] = total_loss.detach()
         return total_loss, logs
 
-    def _extract_dofa_features(
-        self, inputs: torch.Tensor, wvs: torch.Tensor
-    ) -> torch.Tensor:
-        """Extract spatial feature map from frozen DOFA, resized to vf_spatial_size."""
-        B, S = inputs.shape[0], self.vf_spatial_size
+    def _extract_dino_features(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Extract spatial feature map from frozen DINOv3, resized to vf_spatial_size."""
+        S = self.vf_spatial_size
         with torch.no_grad():
             inp_224 = F.interpolate(inputs, 224, mode='bilinear', align_corners=False)
-            feats = self.dofa_net.forward_features(inp_224, wvs)  # list[B, N+1, D]
-            feat = feats[-1][:, 1:, :]  # remove CLS token → [B, N, D]
-            N, D = feat.shape[1], feat.shape[2]
-            hw = int(math.sqrt(N))
-            feat_spatial = feat.permute(0, 2, 1).view(B, D, hw, hw)
+            feat_spatial = self.dino_net.forward_features(inp_224)  # [B, D, hw, hw]
             return F.interpolate(
                 feat_spatial.float(), (S, S), mode='bilinear', align_corners=False
-            )  # [B, D, S, S]
+            )
