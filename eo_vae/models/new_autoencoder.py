@@ -67,6 +67,10 @@ class EOFluxVAE(LightningModule):
         - Standard reconstruction (MSE/perceptual + KL)
         - GAN training (with discriminator)
         - EQ-VAE regularization (latent equivariance)
+
+    VA-VAE VF loss support:
+        Configure dino_net inside the loss_fn (EOVAVAELoss). This module
+        inspects the loss via hasattr to decide whether to extract features.
     """
 
     def __init__(
@@ -88,7 +92,7 @@ class EOFluxVAE(LightningModule):
         p_prior: float = 0.0,
         p_prior_s: float = 0.0,
         anisotropic: bool = False,
-        # optiional latent noise
+        # optional latent noise
         latent_noise_p: float = 0.0,
         noise_tau: float = 0.8,
         # Data
@@ -461,6 +465,17 @@ class EOFluxVAE(LightningModule):
             p for p in self.decoder.parameters() if p.requires_grad
         ]
 
+        # Include loss_fn trainable params (e.g. linear_proj in EOVAVAELoss),
+        # but exclude discriminator (gets its own optimizer below).
+        disc_param_ids = (
+            {id(p) for p in self.loss_fn.discriminator.parameters()}
+            if hasattr(self.loss_fn, 'discriminator')
+            else set()
+        )
+        for p in self.loss_fn.parameters():
+            if p.requires_grad and id(p) not in disc_param_ids:
+                ae_params.append(p)
+
         opt_ae = torch.optim.Adam(ae_params, lr=self.base_lr)
         optimizers = [opt_ae]
         schedulers = []
@@ -545,6 +560,18 @@ class EOFluxVAE(LightningModule):
             # Standard reconstruction
             recon, posterior, z = self.forward(images, wvs, return_z=True)
 
+        # === VF Feature Extraction ===
+        aux_feature = None
+        if hasattr(self.loss_fn, 'dino_net') and self.loss_fn.dino_net is not None:
+            modality = batch.get('modality')
+            if modality in self.loss_fn.vf_modalities:
+                with torch.no_grad():
+                    dino_feats = self.loss_fn.dino_net(images[:, :3])
+                aux_feature = self.loss_fn.linear_proj(dino_feats.to(images.dtype))
+                aux_feature = F.interpolate(
+                    aux_feature, size=(z.shape[-2], z.shape[-1]), mode='bilinear', align_corners=False
+                )
+
         # === Generator Training ===
         opt_gen.zero_grad()
         if opt_disc is not None and hasattr(self.loss_fn, 'discriminator'):
@@ -560,6 +587,7 @@ class EOFluxVAE(LightningModule):
             split='train',
             posterior=posterior,
             z=z,
+            aux_feature=aux_feature,
             modality=batch.get('modality'),
         )
 
@@ -592,6 +620,7 @@ class EOFluxVAE(LightningModule):
                 global_step=self.global_step,
                 last_layer=None,
                 split='train',
+                modality=batch.get('modality'),
             )
             self.manual_backward(disc_loss)
             opt_disc.step()
@@ -614,6 +643,17 @@ class EOFluxVAE(LightningModule):
 
         recon, posterior, z = self.forward(images, wvs, return_z=True)
 
+        aux_feature = None
+        if hasattr(self.loss_fn, 'dino_net') and self.loss_fn.dino_net is not None:
+            modality = batch.get('modality')
+            if modality in self.loss_fn.vf_modalities:
+                with torch.no_grad():
+                    dino_feats = self.loss_fn.dino_net(images[:, :3])
+                aux_feature = self.loss_fn.linear_proj(dino_feats.to(images.dtype))
+                aux_feature = F.interpolate(
+                    aux_feature, size=(z.shape[-2], z.shape[-1]), mode='bilinear', align_corners=False
+                )
+
         val_loss, log_dict = self.loss_fn(
             inputs=images,
             wvs=wvs,
@@ -624,7 +664,7 @@ class EOFluxVAE(LightningModule):
             split='val',
             posterior=posterior,
             z=z,
-            modality=batch.get('modality'),
+            aux_feature=aux_feature,
         )
 
         self.log_dict(
