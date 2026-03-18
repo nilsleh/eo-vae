@@ -239,14 +239,14 @@ class NLayerDiscriminator(nn.Module):
         self.main_net = nn.Sequential(*sequence)
 
         # add dynamic convolution input layer to process input
-        self.conv_in = DynamicConv(
-            wv_planes=128,
-            inter_dim=128,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            embed_dim=input_nc,
-        )
+        # self.conv_in = DynamicConv(
+        #     wv_planes=128,
+        #     inter_dim=128,
+        #     kernel_size=3,
+        #     stride=1,
+        #     padding=1,
+        #     embed_dim=input_nc,
+        # )
 
     def forward(
         self, fake: torch.Tensor, real: torch.Tensor | None, wvs: torch.Tensor
@@ -261,9 +261,12 @@ class NLayerDiscriminator(nn.Module):
         Returns:
             Tuple of (logits_fake, logits_real)
         """
-        logits_fake = self.main_net(self.conv_in(fake, wvs))
-        logits_real = (
-            self.main_net(self.conv_in(real, wvs)) if real is not None else None
-        )
+        # logits_fake = self.main_net(self.conv_in(fake, wvs))
+        logits_fake = self.main_net(fake)
+        logits_real = self.main_net(real) if real is not None else None
+
+        # logits_real = (
+        #     self.main_net(self.conv_in(real, wvs)) if real is not None else None
+        # )
 
         return logits_fake, logits_real

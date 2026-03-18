@@ -17,7 +17,7 @@ class EOVAVAELoss(nn.Module):
       - vf_loss_1: distance-matrix alignment (cosine sim matrices of z vs aux)
       - vf_loss_2: direct cosine alignment between z and aux_feature
 
-    Feature extraction (dino_net) and projection (linear_proj) live here.
+    Feature extraction (dino_net) and discriminator are optional and can be activated independently.
     EOFluxVAE inspects this loss via hasattr to decide whether to extract features.
 
     Optional PatchGAN discriminator loss is applied only to disc_modalities batches.
@@ -63,6 +63,14 @@ class EOVAVAELoss(nn.Module):
         disc_loss_type: str = 'hinge',
         normalize_disc_input: bool = True,
         disc_modalities: list[str] | None = None,
+        # KL annealing (0 = disabled, warm up kl_weight from 0 over this many steps)
+        kl_anneal_steps: int = 0,
+        # Per-modality KL weight overrides. Modalities not listed fall back to kl_weight.
+        # Annealing (kl_anneal_steps) is applied on top of whichever weight is selected.
+        # Example: {"S1RTC": 1e-5, "S2L2A": 2e-6}
+        kl_modality_weights: dict[str, float] | None = None,
+        # EMA decay for adaptive discriminator weight (stabilises d_weight at GAN start)
+        d_weight_ema_decay: float = 0.99,
     ):
         super().__init__()
         self.base_loss = EOConsistencyLoss(
@@ -93,7 +101,10 @@ class EOVAVAELoss(nn.Module):
         self.dino_net = dino_net
         self.vf_spatial_size = vf_spatial_size
         self.vf_modalities = set(vf_modalities) if vf_modalities else {'S2RGB'}
+        # this is used in the lightning module
         self.linear_proj = nn.Conv2d(vf_feature_dim, vf_embed_dim, 1) if dino_net is not None else None
+        if self.linear_proj is not None:
+            self.linear_proj.weight.register_hook(lambda grad: grad.contiguous())
 
         # PatchGAN discriminator
         self.discriminator = discriminator
@@ -104,6 +115,12 @@ class EOVAVAELoss(nn.Module):
         self.normalize_disc_input = normalize_disc_input
         self.disc_modalities = set(disc_modalities) if disc_modalities else {'S2RGB'}
         self.disc_loss_fn = hinge_d_loss if disc_loss_type == 'hinge' else vanilla_d_loss
+        self.kl_anneal_steps = kl_anneal_steps
+        # Convert explicitly to a plain dict so OmegaConf DictConfigs passed via
+        # Hydra don't leak into runtime and reject non-string keys (e.g. None).
+        self.kl_modality_weights = dict(kl_modality_weights) if kl_modality_weights else {}
+        self.d_weight_ema_decay = d_weight_ema_decay
+        self.register_buffer('d_weight_ema', torch.ones(1))
 
     def robust_normalize(self, x: torch.Tensor, clip_val: float = 3.0) -> torch.Tensor:
         return torch.clamp(x, -clip_val, clip_val) / clip_val
@@ -140,7 +157,9 @@ class EOVAVAELoss(nn.Module):
             global_step: Current training step.
             split: 'train' or 'val'.
             posterior: DiagonalGaussianDistribution from encoder (for KL).
-            z: Raw encoder latent [B, z_ch, h, w] (before patch-shuffle/BN).
+            z: Encoder latent [B, z_ch, h, w] used for VF alignment. Pass
+                BN-normalized spatial latent (z_norm_spatial from EOFluxVAE) so
+                the VF loss targets the true generative latent space.
             aux_feature: DINOv2 features already projected to z_ch channels and
                 resized to match z spatial dims [B, z_ch, h_vf, w_vf].
                 When None, VF loss is skipped.
@@ -182,8 +201,14 @@ class EOVAVAELoss(nn.Module):
         if self.kl_weight > 0 and posterior is not None:
             kl = posterior.kl()  # [B]
             kl_loss = torch.sum(kl) / kl.shape[0]
-            total_loss = total_loss + self.kl_weight * kl_loss
+            base_kl_weight = self.kl_modality_weights.get(modality, self.kl_weight) if modality is not None else self.kl_weight
+            if self.kl_anneal_steps > 0:
+                effective_kl_weight = base_kl_weight * min(1.0, global_step / self.kl_anneal_steps)
+            else:
+                effective_kl_weight = base_kl_weight
+            total_loss = total_loss + effective_kl_weight * kl_loss
             logs[f'{split}/loss_kl'] = kl_loss.detach()
+            logs[f'{split}/kl_weight'] = effective_kl_weight
 
         # VF Loss
         vf_active = self.distmat_weight > 0 or self.cos_weight > 0
@@ -231,9 +256,15 @@ class EOVAVAELoss(nn.Module):
             else:
                 d_weight = torch.tensor(1.0, device=total_loss.device)
 
-            total_loss = total_loss + d_weight * self.disc_weight * g_loss
+            d_weight_scalar = d_weight.item() if isinstance(d_weight, torch.Tensor) else float(d_weight)
+            self.d_weight_ema.mul_(self.d_weight_ema_decay).add_(
+                (1.0 - self.d_weight_ema_decay) * d_weight_scalar
+            )
+            d_weight_eff = self.d_weight_ema.item()
+            total_loss = total_loss + d_weight_eff * self.disc_weight * g_loss
             logs[f'{split}/disc/g_loss'] = g_loss.detach()
-            logs[f'{split}/disc/d_weight'] = d_weight.detach() if isinstance(d_weight, torch.Tensor) else d_weight
+            logs[f'{split}/disc/d_weight_raw'] = d_weight_scalar
+            logs[f'{split}/disc/d_weight_ema'] = d_weight_eff
 
         logs[f'{split}/loss_total'] = total_loss.detach()
         return total_loss, logs

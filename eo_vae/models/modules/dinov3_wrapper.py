@@ -18,7 +18,7 @@ class DINOv3Wrapper(nn.Module):
     """
 
     def __init__(
-        self, repo_dir: str, model_name: str, ckpt_path: str, input_size: int = 224
+        self, model_name: str, ckpt_path: str, input_size: int = 224, repo_dir: str = "/mnt/SSD2/nils/dinov3/"
     ):
         super().__init__()
         self.input_size = input_size

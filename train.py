@@ -30,39 +30,11 @@ def create_experiment_dir(config: dict[str, Any]) -> str:
     return config
 
 
-def load_vae_weights_for_refinement(model, ckpt_path):
-    """Loads VAE weights from a checkpoint into the model, ignoring the refiner.
-    This is used for Phase 3 (Flow Refinement) where we start with a pre-trained VAE
-    and train a fresh refiner on top.
-    """
-    print(f'--- Loading VAE Weights for Refinement from {ckpt_path} ---')
-    checkpoint = torch.load(ckpt_path, map_location='cpu')
-    state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
-
-    # Filter out any keys that belong to the refiner (just in case the ckpt has them)
-    # and ensure we only load matching keys for the VAE parts.
-    model_state = model.state_dict()
-    filtered_state_dict = {}
-
-    for k, v in state_dict.items():
-        if k.startswith('refiner'):
-            continue
-        if k in model_state and model_state[k].shape == v.shape:
-            filtered_state_dict[k] = v
-
-    keys = model.load_state_dict(filtered_state_dict, strict=False)
-
-    # Verify that critical VAE parts are loaded
-    missing_vae_keys = [k for k in keys.missing_keys if not k.startswith('refiner')]
-    if len(missing_vae_keys) > 0:
-        print(
-            f'Warning: {len(missing_vae_keys)} VAE keys missing (e.g. {missing_vae_keys[:5]}).'
-        )
-    else:
-        print('Successfully loaded VAE backbone.')
-
 
 def run_experiment(config, distilled_ckpt, vae_ckpt=None, debug: bool = False) -> None:
+    if distilled_ckpt is not None and vae_ckpt is not None:
+        raise ValueError('Provide either --distilled-ckpt or --vae-ckpt, not both.')
+
     torch.set_float32_matmul_precision('medium')
 
     # 1. Instantiate Components Individually
@@ -70,9 +42,8 @@ def run_experiment(config, distilled_ckpt, vae_ckpt=None, debug: bool = False) -
     encoder = instantiate(config.model.encoder)
     decoder = instantiate(config.model.decoder)
 
-    # 2. Load Distilled Weights (Component-wise) - ONLY for Phase 2 (Finetuning)
-    # If we are in Phase 3 (Flow Refine), we load the full VAE later.
-    if distilled_ckpt is not None and vae_ckpt is None:
+    # 2. Load Distilled Weights (Component-wise)
+    if distilled_ckpt is not None:
         print(f'--- Loading Distilled Weights from {distilled_ckpt} ---')
         checkpoint = torch.load(distilled_ckpt, map_location='cpu')
         state_dict = (
@@ -98,24 +69,22 @@ def run_experiment(config, distilled_ckpt, vae_ckpt=None, debug: bool = False) -
         load_component(encoder, 'encoder.', state_dict)
         load_component(decoder, 'decoder.', state_dict)
     elif vae_ckpt is None:
-        print(
-            'No distilled checkpoint provided. Starting from scratch/random initialization (unless VAE ckpt provided later).'
-        )
+        print('No checkpoint provided. Starting from scratch/random initialization.')
 
     # 3. Instantiate Loss & Discriminator (Transferring Weights)
     print('Instantiating Loss Function...')
     loss_cfg = config.model.loss_fn
 
     # Check if we need to inject the dynamic input layer into the discriminator
-    if 'discriminator' in loss_cfg and hasattr(encoder, 'conv_in'):
-        # We need to instantiate the discriminator with the correct input channels
-        # This is a bit of a hack, but it works for now
-        print('Injecting dynamic input layer into discriminator...')
-        loss_fn = instantiate(
-            loss_cfg, discriminator={'input_conv_generator': encoder.conv_in}
-        )
-    else:
-        loss_fn = instantiate(loss_cfg)
+    # if 'discriminator' in loss_cfg and hasattr(encoder, 'conv_in'):
+    #     # We need to instantiate the discriminator with the correct input channels
+    #     # This is a bit of a hack, but it works for now
+    #     print('Injecting dynamic input layer into discriminator...')
+    #     loss_fn = instantiate(
+    #         loss_cfg, discriminator={'input_conv_generator': encoder.conv_in}
+    #     )
+    # else:
+    loss_fn = instantiate(loss_cfg)
 
     # 4. Instantiate Full Model
     # We pass the pre-instantiated objects as kwargs, which overrides the config definitions
@@ -123,12 +92,8 @@ def run_experiment(config, distilled_ckpt, vae_ckpt=None, debug: bool = False) -
 
     model = instantiate(config.model, encoder=encoder, decoder=decoder, loss_fn=loss_fn)
 
-    if distilled_ckpt and not vae_ckpt:
+    if distilled_ckpt:
         model.training_mode = 'finetune'
-
-    # Load VAE weights manually if in flow-refine mode
-    if vae_ckpt and config.model.training_mode == 'flow-refine':
-        load_vae_weights_for_refinement(model, vae_ckpt)
 
     # 5. Instantiate Data
     datamodule = instantiate(config.datamodule)
@@ -172,7 +137,7 @@ def run_experiment(config, distilled_ckpt, vae_ckpt=None, debug: bool = False) -
         ) as f:
             OmegaConf.save(config=config, f=f)
 
-    trainer.fit(model, datamodule=datamodule)
+    trainer.fit(model, datamodule=datamodule, ckpt_path=vae_ckpt)
 
 
 if __name__ == '__main__':

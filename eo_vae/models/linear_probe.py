@@ -2,7 +2,8 @@ import torch
 import math
 import torch.nn as nn
 from lightning import LightningModule
-from torchmetrics import AveragePrecision
+from torchmetrics import AveragePrecision, F1Score, MetricCollection
+
 
 
 class LinearProbeModule(LightningModule):
@@ -36,8 +37,14 @@ class LinearProbeModule(LightningModule):
             nn.Linear(feat_dim // 2, num_classes),
         )
         self.loss_fn = nn.BCEWithLogitsLoss()
-        self.val_map = AveragePrecision(task='multilabel', num_labels=num_classes, average='macro')
-        self.test_map = AveragePrecision(task='multilabel', num_labels=num_classes, average='macro')
+        self.val_metrics = MetricCollection({
+            'mAP': AveragePrecision(task='multilabel', num_labels=num_classes, average='macro'),
+            'F1': F1Score(task='multilabel', num_labels=num_classes, average='macro'),
+        })
+        self.test_metrics = MetricCollection({
+            'mAP': AveragePrecision(task='multilabel', num_labels=num_classes, average='macro'),
+            'F1': F1Score(task='multilabel', num_labels=num_classes, average='macro'),
+        })
 
     def forward(self, feature):
         return self.linear(feature)
@@ -52,21 +59,22 @@ class LinearProbeModule(LightningModule):
         logits = self(batch['feature'])
         loss = self.loss_fn(logits, batch['label'])
         preds = torch.sigmoid(logits)
-        self.val_map.update(preds, batch['label'].int())
+        self.val_metrics.update(preds, batch['label'].int())
         self.log('val_loss', loss, on_epoch=True, prog_bar=True)
 
     def on_validation_epoch_end(self):
-        self.log('val_mAP', self.val_map.compute(), prog_bar=True)
-        self.val_map.reset()
+        self.log('val_mAP', self.val_metrics['mAP'].compute(), prog_bar=True)
+        self.log('val_F1', self.val_metrics['F1'].compute(), prog_bar=True)
+        self.val_metrics.reset()
 
     def test_step(self, batch, batch_idx):
         logits = self(batch['feature'])
         preds = torch.sigmoid(logits)
-        self.test_map.update(preds, batch['label'].int())
+        self.test_metrics.update(preds, batch['label'].int())
 
     def on_test_epoch_end(self):
-        self.log('test_mAP', self.test_map.compute())
-        self.test_map.reset()
+        self.log('test_mAP', self.test_metrics['mAP'].compute())
+        self.test_metrics.reset()
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(

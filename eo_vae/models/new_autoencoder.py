@@ -357,9 +357,11 @@ class EOFluxVAE(LightningModule):
         scale: float | tuple[float, float] | None = None,
         angle: int | None = None,
         return_z: bool = False,
+        return_z_norm: bool = False,
     ) -> (
         tuple[Tensor, DiagonalGaussianDistribution]
         | tuple[Tensor, DiagonalGaussianDistribution, Tensor]
+        | tuple[Tensor, DiagonalGaussianDistribution, Tensor, Tensor]
     ):
         """Full forward pass: encode -> transform -> decode."""
         posterior = self.encode(x, wvs)
@@ -378,6 +380,16 @@ class EOFluxVAE(LightningModule):
         )
         z_normalized = self._normalize_latent(z_shuffled)
 
+        # Unshuffle normalized latent to spatial form for VF alignment.
+        # Captured before optional noise so alignment targets clean representations.
+        if return_z_norm:
+            z_norm_spatial = rearrange(
+                z_normalized,
+                '... (c pi pj) i j -> ... c (i pi) (j pj)',
+                pi=self.ps[0],
+                pj=self.ps[1],
+            )
+
         # optionally add small amount of noise during training for robustness
         if self.training:
             # if random > latent_noise_p, add noise
@@ -386,6 +398,8 @@ class EOFluxVAE(LightningModule):
 
         reconstruction = self.decode(z_normalized, wvs)
         if return_z:
+            if return_z_norm:
+                return reconstruction, posterior, z_raw, z_norm_spatial
             return reconstruction, posterior, z_raw
         return reconstruction, posterior
 
@@ -467,21 +481,22 @@ class EOFluxVAE(LightningModule):
 
         # Include loss_fn trainable params (e.g. linear_proj in EOVAVAELoss),
         # but exclude discriminator (gets its own optimizer below).
-        disc_param_ids = (
-            {id(p) for p in self.loss_fn.discriminator.parameters()}
-            if hasattr(self.loss_fn, 'discriminator')
-            else set()
-        )
-        for p in self.loss_fn.parameters():
-            if p.requires_grad and id(p) not in disc_param_ids:
-                ae_params.append(p)
+        if hasattr(self.loss_fn, 'discriminator') and self.loss_fn.discriminator is not None:
+            disc_param_ids = (
+                {id(p) for p in self.loss_fn.discriminator.parameters()}
+                if hasattr(self.loss_fn, 'discriminator')
+                else set()
+            )
+            for p in self.loss_fn.parameters():
+                if p.requires_grad and id(p) not in disc_param_ids:
+                    ae_params.append(p)
 
         opt_ae = torch.optim.Adam(ae_params, lr=self.base_lr)
         optimizers = [opt_ae]
         schedulers = []
 
         # Discriminator optimizer (if present)
-        if hasattr(self.loss_fn, 'discriminator'):
+        if hasattr(self.loss_fn, 'discriminator') and self.loss_fn.discriminator is not None:
             opt_disc = torch.optim.Adam(
                 self.loss_fn.discriminator.parameters(), lr=self.base_lr
             )
@@ -524,11 +539,16 @@ class EOFluxVAE(LightningModule):
 
         images = batch[self.image_key]
         wvs = batch['wvs']
+        modality = batch.get('modality')
 
         # === EQ-VAE Mode Selection ===
         scale_bins = [0.375, 0.5, 0.75]
         scale, angle = None, None
         target_images = images
+
+        # Request BN-normalized spatial latent when VF loss is active so that
+        # semantic alignment targets the true generative latent space.
+        need_z_norm = hasattr(self.loss_fn, 'dino_net') and self.loss_fn.dino_net is not None
 
         if random.random() < self.p_prior:
             # Latent equivariance mode
@@ -538,39 +558,63 @@ class EOFluxVAE(LightningModule):
                 if self.anisotropic
                 else random.choice(scale_bins)
             )
-            recon, posterior, z = self.forward(
-                images, wvs, scale=scale, angle=angle, return_z=True
+            fwd_result = self.forward(
+                images, wvs, scale=scale, angle=angle, return_z=True, return_z_norm=need_z_norm
             )
             with torch.no_grad():
                 target_images = F.interpolate(
-                    images, size=recon.shape[-2:], mode='area'
+                    images, size=fwd_result[0].shape[-2:], mode='area'
                 )
                 target_images = torch.rot90(target_images, k=angle, dims=[-1, -2])
 
         elif random.random() < self.p_prior_s:
             # Prior preservation mode
             scale = random.choice(scale_bins)
-            recon, posterior, z = self.forward(images, wvs, scale=scale, return_z=True)
+            fwd_result = self.forward(images, wvs, scale=scale, return_z=True, return_z_norm=need_z_norm)
             with torch.no_grad():
                 target_images = F.interpolate(
-                    images, size=recon.shape[-2:], mode='area'
+                    images, size=fwd_result[0].shape[-2:], mode='area'
                 )
 
         else:
             # Standard reconstruction
-            recon, posterior, z = self.forward(images, wvs, return_z=True)
+            fwd_result = self.forward(images, wvs, return_z=True, return_z_norm=need_z_norm)
+
+        if need_z_norm:
+            recon, posterior, z, z_norm_spatial = fwd_result
+        else:
+            recon, posterior, z = fwd_result
+            z_norm_spatial = None
 
         # === VF Feature Extraction ===
         aux_feature = None
-        if hasattr(self.loss_fn, 'dino_net') and self.loss_fn.dino_net is not None:
-            modality = batch.get('modality')
+        if need_z_norm:
             if modality in self.loss_fn.vf_modalities:
                 with torch.no_grad():
                     dino_feats = self.loss_fn.dino_net(images[:, :3])
                 aux_feature = self.loss_fn.linear_proj(dino_feats.to(images.dtype))
                 aux_feature = F.interpolate(
-                    aux_feature, size=(z.shape[-2], z.shape[-1]), mode='bilinear', align_corners=False
+                    aux_feature, size=z_norm_spatial.shape[-2:], mode='bilinear', align_corners=False
                 )
+
+        # === Discriminator eligibility (needed before gen backward for DDP anchor) ===
+        disc_modalities = getattr(self.loss_fn, 'disc_modalities', None)
+        local_disc_eligible = (
+            opt_disc is not None
+            and self.global_step >= self.loss_fn.disc_start
+            and self.loss_fn.disc_weight > 0.0
+            and (disc_modalities is None or modality in disc_modalities)
+        )
+        train_disc = local_disc_eligible
+
+        # Synchronise the disc-training decision across all DDP ranks.
+        # Without this, ranks that hold non-disc modalities skip the discriminator
+        # backward entirely, causing an NCCL collective mismatch (ALLREDUCE on some
+        # ranks, BROADCAST on others) that hangs the job until timeout.
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            train_disc_flag = torch.tensor(int(train_disc), dtype=torch.long, device=self.device)
+            torch.distributed.all_reduce(train_disc_flag, op=torch.distributed.ReduceOp.MAX)
+            train_disc = bool(train_disc_flag.item())
 
         # === Generator Training ===
         opt_gen.zero_grad()
@@ -586,10 +630,17 @@ class EOFluxVAE(LightningModule):
             last_layer=self.get_last_layer(),
             split='train',
             posterior=posterior,
-            z=z,
+            z=z_norm_spatial if z_norm_spatial is not None else z,
             aux_feature=aux_feature,
-            modality=batch.get('modality'),
+            modality=modality,
         )
+
+        # linear_proj is only used for certain modalities; add a zero-contribution
+        # anchor so DDP sees it in every step's computation graph.
+        if aux_feature is None and hasattr(self.loss_fn, 'linear_proj') and self.loss_fn.linear_proj is not None:
+            unused = [p for p in self.loss_fn.linear_proj.parameters() if p.requires_grad]
+            if unused:
+                gen_loss = gen_loss + sum(0.0 * p.sum() for p in unused)
 
         self.manual_backward(gen_loss)
         if self.clip_grad:
@@ -601,27 +652,40 @@ class EOFluxVAE(LightningModule):
             sch_gen.step()
 
         # === Discriminator Training ===
-        train_disc = (
-            opt_disc is not None
-            and self.global_step >= self.loss_fn.disc_start
-            and self.loss_fn.disc_weight > 0.0
-        )
-
         if train_disc:
             if hasattr(self.loss_fn, 'discriminator'):
                 self.loss_fn.discriminator.train()
 
             opt_disc.zero_grad()
-            disc_loss, log_dict_disc = self.loss_fn(
-                inputs=target_images,
-                wvs=wvs,
-                reconstructions=recon.detach(),
-                optimizer_idx=1,
-                global_step=self.global_step,
-                last_layer=None,
-                split='train',
-                modality=batch.get('modality'),
-            )
+
+            # Check if this rank's modality actually participates in disc training.
+            local_participates = disc_modalities is None or modality in disc_modalities
+
+            if local_participates:
+                disc_loss, log_dict_disc = self.loss_fn(
+                    inputs=target_images,
+                    wvs=wvs,
+                    reconstructions=recon.detach(),
+                    optimizer_idx=1,
+                    global_step=self.global_step,
+                    last_layer=None,
+                    split='train',
+                    modality=modality,
+                )
+            else:
+                # Non-participating rank: run a zero-weighted disc forward through a
+                # 3-ch dummy input (discriminator expects RGB; local modality may have
+                # different channel count). This ensures:
+                #   (a) AMP scaler registers inf-checks for opt_disc, and
+                #   (b) DDP gradient ALLREDUCE collectives are symmetric across ranks.
+                # Gradients are zeroed out (0.0 * ...) so disc weights are unaffected.
+                H, W = target_images.shape[-2:]
+                dummy = torch.zeros(1, 3, H, W, device=self.device, dtype=target_images.dtype)
+                dummy_wvs = wvs[:1] if wvs is not None else wvs
+                logits_fake, logits_real = self.loss_fn.discriminator(dummy, dummy, dummy_wvs)
+                disc_loss = 0.0 * (logits_fake.sum() + logits_real.sum())
+                log_dict_disc = {}
+
             self.manual_backward(disc_loss)
             opt_disc.step()
             if sch_disc:

@@ -20,6 +20,12 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
 
+def gem_pool(x: torch.Tensor, p: float = 3.0) -> torch.Tensor:
+    """Generalized mean pooling over spatial dims. x: (B, H, W, D) -> (B, D)"""
+    powered = x.sign() * x.abs().pow(p)
+    pooled = powered.mean(dim=(1, 2))
+    return pooled.sign() * pooled.abs().pow(1.0 / p)
+
 class GeobenchLatentDataset(Dataset):
     """Dataset of pre-encoded geobench spatial latents.
 
@@ -30,6 +36,7 @@ class GeobenchLatentDataset(Dataset):
         pool: Pooling strategy applied after normalisation.
             'avg' (default): global average pool → [32]
             'max': global max pool → [32]
+            'gem': generalized mean pool → [32]
             'flatten': no pooling, return [32, H, W]
     """
 
@@ -41,7 +48,7 @@ class GeobenchLatentDataset(Dataset):
         pool: str = 'avg',
     ):
         assert split in ('train', 'val', 'test'), f'Invalid split: {split}'
-        assert pool in ('avg', 'max', 'flatten'), f'Invalid pool: {pool}'
+        assert pool in ('avg', 'max', 'flatten', 'gem'), f'Invalid pool: {pool}'
         self.normalize = normalize
         self.pool = pool
 
@@ -81,9 +88,10 @@ class GeobenchLatentDataset(Dataset):
             feature = F.adaptive_avg_pool2d(feature.unsqueeze(0), 1).squeeze()  # [32]
         elif self.pool == 'max':
             feature = F.adaptive_max_pool2d(feature.unsqueeze(0), 1).squeeze()  # [32]
+        elif self.pool == 'gem':
+            feature = gem_pool(feature, p=3.0)  # [32]
         elif self.pool == 'flatten':
             feature = feature.flatten()  # [32*H*W]
-
         return {'feature': feature, 'label': label}
 
 
