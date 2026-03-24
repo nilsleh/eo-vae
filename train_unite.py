@@ -39,7 +39,7 @@ def create_experiment_dir(config: dict[str, Any]) -> dict:
 
 
 def run_experiment(config, unite_ckpt: str | None = None, resume_ckpt: str | None = None,
-                   debug: bool = False) -> None:
+                   distilled_io_ckpt: str | None = None, debug: bool = False) -> None:
     torch.set_float32_matmul_precision('medium')
 
     print('Instantiating loss function...')
@@ -52,6 +52,11 @@ def run_experiment(config, unite_ckpt: str | None = None, resume_ckpt: str | Non
     if unite_ckpt is not None:
         print(f'Loading UNITE checkpoint: {unite_ckpt}')
         model._load_checkpoint(unite_ckpt)
+
+    # Load distilled IO layers (patch_embed, unpatchify, modality_conditioner, cond_proj)
+    if distilled_io_ckpt is not None:
+        print(f'Loading distilled IO checkpoint: {distilled_io_ckpt}')
+        model._load_distilled_io_ckpt(distilled_io_ckpt)
 
     print('Instantiating datamodule...')
     datamodule = instantiate(config.datamodule)
@@ -104,6 +109,8 @@ if __name__ == '__main__':
                         help='UNITE pretrained .pt checkpoint for partial weight loading')
     parser.add_argument('--resume', type=str, default=None,
                         help='Full .ckpt to resume training from')
+    parser.add_argument('--distilled-io-ckpt', type=str, default=None,
+                        help='Distilled IO layers .pt from weight_distill_unite.py')
     parser.add_argument('--debug', action='store_true',
                         help='Debug mode: no logging, run on CPU')
     args = parser.parse_args()
@@ -113,4 +120,5 @@ if __name__ == '__main__':
     if not args.debug:
         config = create_experiment_dir(config)
 
-    run_experiment(config, unite_ckpt=args.ckpt, resume_ckpt=args.resume, debug=args.debug)
+    run_experiment(config, unite_ckpt=args.ckpt, resume_ckpt=args.resume,
+                   distilled_io_ckpt=args.distilled_io_ckpt, debug=args.debug)

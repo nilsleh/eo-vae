@@ -488,6 +488,19 @@ class EOUnite(L.LightningModule):
             print(f'[EOUnite] Loaded UNITE .pt — matched: {len(filtered)}, '
                   f'missing: {len(missing)}, unexpected: {len(unexpected)}')
 
+    def _load_distilled_io_ckpt(self, ckpt_path: str) -> None:
+        """Load distilled IO layer weights from a weight_distill_unite checkpoint."""
+        import os
+        if not os.path.exists(ckpt_path):
+            print(f'[EOUnite] Distilled IO checkpoint not found: {ckpt_path}')
+            return
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        self.patch_embed.load_state_dict(ckpt['patch_embed_state_dict'])
+        self.unpatchify.load_state_dict(ckpt['unpatchify_state_dict'])
+        self.modality_conditioner.load_state_dict(ckpt['modality_conditioner_state_dict'])
+        self.cond_proj.load_state_dict(ckpt['cond_proj_state_dict'])
+        print(f'[EOUnite] Loaded distilled IO layers from {ckpt_path}')
+
     # ------------------------------------------------------------------
     # Freeze / unfreeze body
     # ------------------------------------------------------------------
