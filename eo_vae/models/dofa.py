@@ -898,3 +898,21 @@ def load_dofa_weights(
             print('No weights to load.')
 
     return model
+
+
+def build_dofa_for_lpips(ckpt_data: str, model_size: str = 'large') -> 'OFAViT':
+    """Build a pretrained OFAViT for use as DOFALPIPS backbone.
+
+    Returns the raw OFAViT (not wrapped), compatible with DOFALPIPS which calls
+    forward_features(x, wvs) directly with per-batch dynamic wavelengths.
+
+    Args:
+        ckpt_data: Path to DOFA checkpoint (.pth) or HuggingFace URL.
+        model_size: 'base' (768-dim, 12 layers) or 'large' (1024-dim, 24 layers).
+    """
+    if model_size == 'large':
+        model = vit_large_patch16()
+    else:
+        model = vit_base_patch16()
+    model = load_dofa_weights(model, 'bilinear', ckpt_data, None, 224)
+    return model
