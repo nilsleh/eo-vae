@@ -91,6 +91,8 @@ class EOUnite(L.LightningModule):
         noising_t_start: float = 0.7,
         lognorm_mu: float = 0.0,
         lognorm_sigma: float = 1.0,
+        freeze_body: bool = False,
+        unfreeze_epoch: int | None = None,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['loss_fn'])
@@ -201,6 +203,10 @@ class EOUnite(L.LightningModule):
         # Load checkpoint if provided
         if ckpt_path is not None:
             self._load_checkpoint(ckpt_path)
+
+        self._body_unfrozen = False
+        if freeze_body:
+            self._freeze_body()
 
     # ------------------------------------------------------------------
     # Core encode / decode
@@ -402,8 +408,28 @@ class EOUnite(L.LightningModule):
     # Optimizer / LR schedule
     # ------------------------------------------------------------------
 
+    def on_train_epoch_start(self) -> None:
+        if (
+            self.hparams.unfreeze_epoch is not None
+            and not self._body_unfrozen
+            and self.current_epoch >= self.hparams.unfreeze_epoch
+        ):
+            self._unfreeze_body()
+            self._body_unfrozen = True
+            body_params = (
+                list(self.encoder.parameters())
+                + list(self.encoder_ln.parameters())
+                + list(self.decoder.parameters())
+                + list(self.up_sample_decoder.parameters())
+                + [self.latent_tokens]
+            )
+            current_lr = self.optimizers().param_groups[0]['lr']
+            self.optimizers().add_param_group({'params': body_params, 'lr': current_lr})
+            print(f'[EOUnite] Added body params to optimizer at epoch {self.current_epoch}, lr={current_lr:.2e}.')
+
     def configure_optimizers(self):
-        opt = torch.optim.AdamW(self.parameters(), lr=self.hparams.base_lr, weight_decay=1e-4)
+        params = [p for p in self.parameters() if p.requires_grad]
+        opt = torch.optim.AdamW(params, lr=self.hparams.base_lr, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.LambdaLR(opt, self._lr_lambda)
         return {'optimizer': opt, 'lr_scheduler': {'scheduler': scheduler, 'interval': 'epoch'}}
 
@@ -461,6 +487,24 @@ class EOUnite(L.LightningModule):
             missing, unexpected = self.load_state_dict(filtered, strict=False)
             print(f'[EOUnite] Loaded UNITE .pt — matched: {len(filtered)}, '
                   f'missing: {len(missing)}, unexpected: {len(unexpected)}')
+
+    # ------------------------------------------------------------------
+    # Freeze / unfreeze body
+    # ------------------------------------------------------------------
+
+    def _freeze_body(self) -> None:
+        """Freeze pretrained UNITE body; keep EO-specific I/O layers trainable."""
+        for mod in [self.encoder, self.encoder_ln, self.decoder, self.up_sample_decoder]:
+            for p in mod.parameters():
+                p.requires_grad = False
+        self.latent_tokens.requires_grad = False
+        print('[EOUnite] Body frozen. Training I/O layers only.')
+
+    def _unfreeze_body(self) -> None:
+        """Restore requires_grad for all body parameters."""
+        for p in self.parameters():
+            p.requires_grad = True
+        print('[EOUnite] Body unfrozen. Full end-to-end training.')
 
     # ------------------------------------------------------------------
     # Helpers
