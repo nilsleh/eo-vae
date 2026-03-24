@@ -58,6 +58,8 @@ class EOUniteLoss(nn.Module):
         self.lpips_modalities = lpips_modalities if lpips_modalities is not None else ['S2RGB']
         self.gradient_checkpointing_denoiser = gradient_checkpointing_denoiser
         self._dofa_net = dofa_net
+        # DOFA-LPIPS backbone in this setup is trained with 224x224 positional embeddings.
+        self.lpips_input_size = 224
 
         # DOFA-LPIPS is lazy-initialized on first use
         self._dofa_lpips = None
@@ -120,7 +122,21 @@ class EOUniteLoss(nn.Module):
         lpips_loss = torch.tensor(0.0, device=recon.device)
         if self.perceptual_weight > 0 and modality in self.lpips_modalities:
             lpips_module = self.dofa_lpips.to(recon.device)
-            lpips_loss = lpips_module(recon, target, wvs)
+            # Keep EOUnite reconstruction/pixel losses at native resolution while
+            # evaluating perceptual distance on DOFA's expected 224x224 grid.
+            recon_lpips = F.interpolate(
+                recon,
+                size=(self.lpips_input_size, self.lpips_input_size),
+                mode='bilinear',
+                align_corners=False,
+            )
+            target_lpips = F.interpolate(
+                target,
+                size=(self.lpips_input_size, self.lpips_input_size),
+                mode='bilinear',
+                align_corners=False,
+            )
+            lpips_loss = lpips_module(recon_lpips, target_lpips, wvs)
         logs[f'{split}/lpips_loss'] = lpips_loss.detach()
 
         recon_loss = self.pixel_weight * rec_loss + self.perceptual_weight * lpips_loss

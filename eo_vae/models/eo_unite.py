@@ -318,7 +318,7 @@ class EOUnite(L.LightningModule):
             split='train',
             alibi_bias=self.alibi,
         )
-        self.log_dict(logs, prog_bar=False, on_step=True, on_epoch=False)
+        self.log_dict(logs, prog_bar=True, on_step=True, on_epoch=False)
         return total_loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
@@ -467,7 +467,7 @@ class EOUnite(L.LightningModule):
         elif ckpt_path.endswith('.pt'):
             # UNITE pretrained checkpoint: load encoder/decoder transformer weights
             # Skip patch_embed, unpatchify, and modality_conditioner (new modules)
-            state = torch.load(ckpt_path, map_location='cpu')
+            state = torch.load(ckpt_path, map_location='cpu', weights_only=False)
             sd = state.get('model', state)
 
             # Remap UNITE key names → EO-Unite key names

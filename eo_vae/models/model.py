@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 
 from .modules.dynamic_conv import DynamicConv, DynamicConv_decoder
 from .modules.layers import AttnBlock, Downsample, ResnetBlock, Upsample
@@ -69,11 +70,14 @@ class Encoder(nn.Module):
         z_channels: int,
         use_dynamic_ops: bool = False,
         dynamic_conv_kwargs: dict = None,
+        checkpoint_levels: list[int] | None = None,
     ):
         super().__init__()
         self.ch = ch
         self.num_resolutions = len(ch_mult)
         self.num_res_blocks = num_res_blocks
+        # Which down-levels to apply gradient checkpointing to. None = all levels.
+        self.checkpoint_levels = set(checkpoint_levels) if checkpoint_levels is not None else None
         self.resolution = resolution
         self.in_channels = in_channels
         self.z_channels = z_channels
@@ -171,8 +175,10 @@ class Encoder(nn.Module):
             hs = [self.conv_in(x)]
 
         for i_level in range(self.num_resolutions):
+            use_ckpt = self.checkpoint_levels is None or i_level in self.checkpoint_levels
             for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1], emb)
+                block = self.down[i_level].block[i_block]
+                h = checkpoint(block, hs[-1], emb, use_reentrant=False) if use_ckpt else block(hs[-1], emb)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
                 hs.append(h)
@@ -180,9 +186,9 @@ class Encoder(nn.Module):
                 hs.append(self.down[i_level].downsample(hs[-1]))
 
         h = hs[-1]
-        h = self.mid.block_1(h, emb)
+        h = checkpoint(self.mid.block_1, h, emb, use_reentrant=False)
         h = self.mid.attn_1(h)
-        h = self.mid.block_2(h, emb)
+        h = checkpoint(self.mid.block_2, h, emb, use_reentrant=False)
 
         h = self.norm_out(h)
         h = swish(h)
@@ -221,12 +227,15 @@ class Decoder(nn.Module):
         z_channels: int,
         use_dynamic_ops: bool = False,
         dynamic_conv_kwargs: dict = None,
+        checkpoint_levels: list[int] | None = None,
     ):
         super().__init__()
         self.post_quant_conv = torch.nn.Conv2d(z_channels, z_channels, 1)
         self.ch = ch
         self.num_resolutions = len(ch_mult)
         self.num_res_blocks = num_res_blocks
+        # Which up-levels to apply gradient checkpointing to. None = all levels.
+        self.checkpoint_levels = set(checkpoint_levels) if checkpoint_levels is not None else None
         self.z_channels = z_channels
         self.resolution = resolution
         self.use_dynamic_ops = use_dynamic_ops
@@ -318,15 +327,17 @@ class Decoder(nn.Module):
             assert wvs is not None
             emb = self.conditioner(wvs)
 
-        h = self.mid.block_1(h, emb)
+        h = checkpoint(self.mid.block_1, h, emb, use_reentrant=False)
         h = self.mid.attn_1(h)
-        h = self.mid.block_2(h, emb)
+        h = checkpoint(self.mid.block_2, h, emb, use_reentrant=False)
 
         h = h.to(upscale_dtype)
 
         for i_level in reversed(range(self.num_resolutions)):
+            use_ckpt = self.checkpoint_levels is None or i_level in self.checkpoint_levels
             for i_block in range(self.num_res_blocks + 1):
-                h = self.up[i_level].block[i_block](h, emb)
+                block = self.up[i_level].block[i_block]
+                h = checkpoint(block, h, emb, use_reentrant=False) if use_ckpt else block(h, emb)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
             if i_level != 0:

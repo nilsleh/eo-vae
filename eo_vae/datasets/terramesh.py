@@ -21,6 +21,7 @@ import os
 import re
 import warnings
 from collections.abc import Callable, Iterable
+from functools import lru_cache
 
 import braceexpand
 import fsspec
@@ -132,6 +133,27 @@ statistics = {
 }
 
 
+@lru_cache(maxsize=16)
+def _load_keep_keys(keep_keys_path: str) -> set[str]:
+    keys: set[str] = set()
+    with open(keep_keys_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            key = line.strip()
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _sample_in_keep_keys(sample: dict, keep_keys: set[str]) -> bool:
+    key = sample.get('__key__')
+    if key is None:
+        return False
+    if key in keep_keys:
+        return True
+    # Safety fallback in case keys are stored with extension.
+    return f'{key}.zarr.zip' in keep_keys
+
+
 def build_terramesh_dataset(
     path: str = 'https://huggingface.co/datasets/ibm-esa-geospatial/TerraMesh/resolve/main/',
     modalities: list[str] | str = None,
@@ -148,6 +170,7 @@ def build_terramesh_dataset(
     partial: bool = None,
     probs: list[int] = None,
     harmonize_s2l2a: bool = False,
+    keep_keys_path: str | None = None,
     **kwargs,
 ):
     """Builds a dataset for TerraMesh, see https://huggingface.co/datasets/ibm-esa-geospatial/TerraMesh.
@@ -172,15 +195,17 @@ def build_terramesh_dataset(
     :param harmonize_s2l2a: If True, applies +1000 offset to S2L2A images captured on/after Jan 24, 2022.
     :return: WebDataset (single modality) or DataPipeline (multiple modalities)
     """
+    if modalities is None:
+        raise ValueError('modalities must be provided and cannot be None.')
+
     if len(modalities) == 1:
         # Single modality
         modalities = modalities[0]
 
     # No shuffle and partial load for val
-    # shuffle = shuffle if shuffle is not None else split != 'val'
-    shuffle = shuffle
+    shuffle = shuffle if shuffle is not None else split != 'val'
     partial = partial if partial is not None else split == 'val'
-    shardshuffle = shardshuffle * shuffle
+    shardshuffle = shardshuffle if shuffle else 0
 
     if isinstance(modalities, str):
         # Build standard WebDataset for single modality
@@ -199,6 +224,7 @@ def build_terramesh_dataset(
             time_dim=time_dim,
             partial=partial,
             harmonize_s2l2a=harmonize_s2l2a,
+            keep_keys_path=keep_keys_path,
             **kwargs,
         )
         return dataset
@@ -224,6 +250,7 @@ def build_terramesh_dataset(
             partial=partial,
             probs=probs,
             harmonize_s2l2a=harmonize_s2l2a,
+            keep_keys_path=keep_keys_path,
         )
         return dataset
 
@@ -354,6 +381,7 @@ def build_wds_dataset(
     partial: bool = False,
     shuffle: bool = False,
     harmonize_s2l2a: bool = False,
+    keep_keys_path: str | None = None,
     *args,
     **kwargs,
 ):
@@ -386,6 +414,14 @@ def build_wds_dataset(
         empty_check=empty_check,
         **kwargs,
     )
+
+    if keep_keys_path is not None:
+        keep_keys = _load_keep_keys(keep_keys_path)
+        if not keep_keys:
+            raise ValueError(
+                f'keep_keys_path={keep_keys_path!r} is empty. Expected at least one key.'
+            )
+        dataset = dataset.select(lambda s, kk=keep_keys: _sample_in_keep_keys(s, kk))
 
     # Decode from bytes to numpy arrays, etc.
     # Choose decoder based on requirements:
@@ -434,14 +470,23 @@ def _subset_pipeline(
     time_dim,
     partial,
     harmonize_s2l2a=False,
+    keep_keys_path: str | None = None,
 ):
+    keep_keys = None
+    if keep_keys_path is not None:
+        keep_keys = _load_keep_keys(keep_keys_path)
+        if not keep_keys:
+            raise ValueError(
+                f'keep_keys_path={keep_keys_path!r} is empty. Expected at least one key.'
+            )
+
     # Determine decoder based on metadata and harmonization needs
     if return_metadata or harmonize_s2l2a:
         decoder = wds.map(make_zarr_metadata_decoder(harmonize_s2l2a=harmonize_s2l2a))
     else:
         decoder = wds.decode(zarr_decoding)
 
-    return wds.DataPipeline(
+    pipeline_stages = [
         wds.ResampledShards(
             urls, deterministic=deterministic, seed=seed, empty_check=empty_check
         )
@@ -451,15 +496,30 @@ def _subset_pipeline(
         wds.split_by_worker,
         # Extract individual samples from multi-modal tar files
         multi_tarfile_samples,
-        wds.shuffle(shardshuffle, seed=seed),
-        # Decode from bytes to numpy arrays, etc.
-        decoder,
-        # Remove time dimension from tensors
-        wds.map(drop_time_dim) if not time_dim else wds.map(identity),
-        wds.map(remove_extensions),
-        wds.map(transform) if transform is not None else wds.map(identity),
-        wds.batched(batch_size, collation_fn=collate_fn, partial=partial),
+    ]
+
+    if keep_keys is not None:
+        pipeline_stages.append(wds.select(lambda s, kk=keep_keys: _sample_in_keep_keys(s, kk)))
+
+    if shardshuffle:
+        pipeline_stages.append(wds.shuffle(shardshuffle, seed=seed))
+
+    pipeline_stages.extend(
+        [
+            # Decode from bytes to numpy arrays, etc.
+            decoder,
+            # Remove time dimension from tensors
+            wds.map(drop_time_dim) if not time_dim else wds.map(identity),
+            wds.map(remove_extensions),
+            wds.map(transform) if transform is not None else wds.map(identity),
+        ]
     )
+
+    pipeline_stages.append(wds.batched(batch_size, collation_fn=collate_fn, partial=partial))
+
+    pipeline = wds.DataPipeline(*pipeline_stages)
+
+    return pipeline
 
 
 def build_multimodal_dataset(
@@ -478,6 +538,7 @@ def build_multimodal_dataset(
     partial: bool = False,
     probs: list[int] = None,
     harmonize_s2l2a: bool = False,
+    keep_keys_path: str | None = None,
 ):
     if modalities is None:
         modalities = [
@@ -533,6 +594,7 @@ def build_multimodal_dataset(
         time_dim=time_dim,
         partial=partial,
         harmonize_s2l2a=should_harmonize,
+        keep_keys_path=keep_keys_path,
     )
 
     ds_ssl = _subset_pipeline(
@@ -547,6 +609,7 @@ def build_multimodal_dataset(
         time_dim=time_dim,
         partial=partial,
         harmonize_s2l2a=should_harmonize,
+        keep_keys_path=keep_keys_path,
     )
 
     # mix batches (never mixes samples)
@@ -595,7 +658,14 @@ def remove_extensions(sample):
     in the form f"{modality_name}.{modality_extension}", e.g. "rgb.jpg" or "caption.json".
     This function removes them and returns a dictionary of {f"{modality_name}": modality}.
     """
-    return {remove_ext_with_gz(k): v for k, v in sample.items()}
+    cleaned = {}
+    for k, v in sample.items():
+        # Preserve webdataset bookkeeping fields used for filtering/debugging.
+        if k.startswith('__'):
+            cleaned[k] = v
+        else:
+            cleaned[remove_ext_with_gz(k)] = v
+    return cleaned
 
 
 def multi_tarfile_samples(src_iter: Iterable[dict]):

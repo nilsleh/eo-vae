@@ -208,8 +208,10 @@ class ImageLogger(Callback):
 
         # Extract batch data
         images = batch['image']
-        wvs = batch['wvs']
+        wvs = batch['wvs'].to(images.device).float()
         modality = batch.get('modality', 'S2RGB')
+        if isinstance(modality, (list, tuple)):
+            modality = modality[0]
 
         # Determine normalization scheme from datamodule
         dm = pl_module.trainer.datamodule
@@ -217,7 +219,7 @@ class ImageLogger(Callback):
 
         # 1. Forward Pass
         with torch.no_grad():
-            reconstruction = pl_module(images, wvs)
+            reconstruction = self._reconstruct_batch(pl_module, batch, images, wvs)
             if isinstance(reconstruction, tuple):
                 reconstruction = reconstruction[0]
 
@@ -282,6 +284,29 @@ class ImageLogger(Callback):
         plt.tight_layout()
         plt.savefig(path)
         plt.close()
+
+    def _reconstruct_batch(self, pl_module, batch, images, wvs):
+        """Run reconstruction for generic models and EOUnite-style modules."""
+        if hasattr(pl_module, 'encode') and hasattr(pl_module, 'decode'):
+            cond = None
+            if hasattr(pl_module, 'modality_conditioner') and hasattr(pl_module, 'cond_proj'):
+                geo = None
+                if hasattr(pl_module, '_build_geo'):
+                    geo = pl_module._build_geo(batch, images.device, images.dtype)
+
+                time = batch.get('time')
+                if time is not None:
+                    time = time.float().to(images.device)
+
+                cond_raw = pl_module.modality_conditioner(wvs, geo=geo, time=time)
+                cond = pl_module.cond_proj(cond_raw)
+
+            z = pl_module.encode(images, wvs, cond=cond)
+            if hasattr(pl_module, 'encoder_ln'):
+                z = pl_module.encoder_ln(z)
+            return pl_module.decode(z, wvs)
+
+        return pl_module(images, wvs)
 
     def _denormalize(self, x, modality, norm_scheme, device):
         """Denormalize images back to physical units.

@@ -19,6 +19,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from omegaconf import OmegaConf
 
+from eo_vae.utils.image_logger import ImageLogger
+
 OmegaConf.register_new_resolver('eval', eval)
 
 
@@ -70,6 +72,7 @@ def run_experiment(config, unite_ckpt: str | None = None, resume_ckpt: str | Non
                 mode=config['wandb']['mode'],
             ),
         ]
+        img_logger = ImageLogger(max_images=8, save_dir=save_dir)
         checkpoint_callback = ModelCheckpoint(
             dirpath=save_dir,
             save_top_k=2,
@@ -78,7 +81,7 @@ def run_experiment(config, unite_ckpt: str | None = None, resume_ckpt: str | Non
             save_last=True,
             every_n_epochs=1,
         )
-        callbacks = [checkpoint_callback]
+        callbacks = [checkpoint_callback, img_logger]
 
         with open(os.path.join(save_dir, 'config.yaml'), 'w') as f:
             OmegaConf.save(config=config, f=f)

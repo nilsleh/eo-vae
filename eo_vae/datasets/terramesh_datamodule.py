@@ -49,6 +49,10 @@ WAVELENGTHS = {
     ],
 }
 
+# Default train shard policy: first 25 majortom shards + top urban shards.
+DEFAULT_TRAIN_MAJOR_SHARDS = list(range(1, 26))
+TOP_URBAN_SHARDS = [749, 264, 571, 109, 768]
+
 # Original z-score normalization stats (from TerraMesh)
 NORM_STATS_LEGACY = {
     'S2L2A': {
@@ -671,6 +675,7 @@ class TerraMeshDataModule(LightningDataModule):
                                clipping for S2L1C
         target_size: Target image size (H, W)
         return_metadata: Whether to return metadata (time, lat, lon, etc.) in batches
+        keep_keys_path: Optional newline-delimited keep-list produced by curation script.
         **kwargs: Additional arguments passed to build_terramesh_dataset
 
     Note on time-aware harmonization:
@@ -697,6 +702,7 @@ class TerraMeshDataModule(LightningDataModule):
         norm_method='zscore',
         target_size=(224, 224),
         return_metadata=False,
+        keep_keys_path=None,
         **kwargs,
     ):
         super().__init__()
@@ -709,7 +715,13 @@ class TerraMeshDataModule(LightningDataModule):
         self.norm_scheme = norm_scheme
         self.norm_method = norm_method
         self.return_metadata = return_metadata
+        self.keep_keys_path = keep_keys_path
         self.kwargs = kwargs
+
+        if self.keep_keys_path is not None and not os.path.exists(self.keep_keys_path):
+            raise FileNotFoundError(
+                f'keep_keys_path does not exist: {self.keep_keys_path}'
+            )
 
         if isinstance(target_size, ListConfig):
             target_size = tuple(target_size)
@@ -792,12 +804,27 @@ class TerraMeshDataModule(LightningDataModule):
         else:
             mod_path_segment = self.modalities[0]
 
+        train_shards = sorted(set(DEFAULT_TRAIN_MAJOR_SHARDS + TOP_URBAN_SHARDS))
+        shard_token = ','.join(f'{s:06d}' for s in train_shards)
+
+        print(
+            f'Train majortom shards ({len(train_shards)}): '
+            f"{', '.join(str(s) for s in train_shards)}"
+        )
+
         train_urls = os.path.join(
             self.data_path,
             'train',
             mod_path_segment,
-            'majortom_shard_{000001..000025}.tar',
+            f'majortom_shard_{{{shard_token}}}.tar',
         )
+
+        if self.keep_keys_path is not None:
+            print(
+                f'Applying keep-keys filtering to train split only: {self.keep_keys_path}'
+            )
+            print('Validation and test splits are intentionally unfiltered.')
+            self._validate_train_keep_keys(train_urls)
 
         val_urls = os.path.join(
             self.data_path,
@@ -824,6 +851,7 @@ class TerraMeshDataModule(LightningDataModule):
             shardshuffle=1000,
             return_metadata=self.return_metadata,
             harmonize_s2l2a=self._needs_s2l2a_harmonization,
+            keep_keys_path=self.keep_keys_path,
             **self.kwargs,
         )
 
@@ -886,6 +914,82 @@ class TerraMeshDataModule(LightningDataModule):
         Useful for inference or visualization.
         """
         return NormalizerFactory.create(modality, self.norm_scheme)
+
+    def _validate_train_keep_keys(self, train_urls: str) -> None:
+        """Fail fast if keep-list has no overlap with the configured train shards."""
+        probe_dataset = build_terramesh_dataset(
+            path=self.data_path,
+            urls=train_urls,
+            modalities=self.modalities,
+            split='train',
+            batch_size=1,
+            shuffle=False,
+            shardshuffle=0,
+            return_metadata=False,
+            harmonize_s2l2a=self._needs_s2l2a_harmonization,
+            keep_keys_path=self.keep_keys_path,
+            partial=True,
+        )
+
+        try:
+            next(iter(probe_dataset))
+        except StopIteration as exc:
+            raise ValueError(
+                'No training samples matched keep_keys_path for the configured train '
+                'shards. Check key format and shard selection.'
+            ) from exc
+
+    def assert_train_batches_match_keep_keys(self, max_batches: int = 5) -> None:
+        """Assert first N train batches only contain keys from keep_keys_path.
+
+        This is a runtime safety check for curation/filtering regressions.
+        """
+        if self.keep_keys_path is None:
+            raise ValueError('keep_keys_path is required for keep-key assertion checks.')
+        if max_batches <= 0:
+            raise ValueError('max_batches must be > 0.')
+
+        with open(self.keep_keys_path, 'r', encoding='utf-8') as f:
+            keep_keys = {line.strip() for line in f if line.strip()}
+        if not keep_keys:
+            raise ValueError(
+                f'keep_keys_path={self.keep_keys_path!r} is empty. Expected at least one key.'
+            )
+
+        if not hasattr(self, 'train_dataset'):
+            raise RuntimeError('Call setup() before running keep-key assertions.')
+
+        checked = 0
+        for batch in self.train_dataset:
+            keys = batch.get('__key__')
+            if keys is None:
+                raise RuntimeError(
+                    'Train dataset batch is missing __key__. Cannot validate keep-key filtering.'
+                )
+
+            key_list = keys if isinstance(keys, (list, tuple)) else [keys]
+            key_set = set(key_list)
+            invalid = [k for k in key_set if k not in keep_keys]
+            if invalid:
+                preview = ', '.join(sorted(invalid)[:5])
+                raise AssertionError(
+                    'Keep-key filtering violation: found train samples outside keep list. '
+                    f'Examples: {preview}'
+                )
+
+            checked += 1
+            if checked >= max_batches:
+                break
+
+        if checked == 0:
+            raise AssertionError(
+                'No batches were produced while checking keep-key assertions.'
+            )
+
+        print(
+            f'Keep-key assertion passed for {checked} train batch(es) '
+            f'using {self.keep_keys_path}.'
+        )
 
 
 class RunningStatsButFast(torch.nn.Module):

@@ -553,17 +553,6 @@ class DOFAViT_v3(nn.Module):
 
         return outx
 
-        # import pdb
-        # pdb.set_trace()
-        # if self.global_pool:
-        #     x = self.model.norm(outx)
-        #     x = x[:, self.model.num_prefix_tokens:, :].mean(dim=1)  # global pool without cls token
-        #     outcome = self.fc_norm(x)
-        # else:
-        #     x = self.model.norm(x)
-        #     outcome = x[:, 0]
-        # return outcome
-
     def forward_head(self, x, pre_logits=False):
         x = self.model.head_drop(x)
         return x if pre_logits else self.head(x)
@@ -866,7 +855,27 @@ def load_dofa_weights(
                     mode=mode,
                 )
 
-        msg = model.load_state_dict(checkpoint_model, strict=False)
+        # strict=False still errors on shape mismatches, so filter incompatible keys.
+        filtered_ckpt = {}
+        skipped_shape = []
+        for k, v in checkpoint_model.items():
+            if k in state_dict:
+                if state_dict[k].shape == v.shape:
+                    filtered_ckpt[k] = v
+                else:
+                    skipped_shape.append(k)
+            else:
+                # Keep unknown keys out; load_state_dict will report them otherwise.
+                continue
+
+        if skipped_shape:
+            logging.info(
+                'Skipping %d checkpoint keys due to shape mismatch (e.g. %s)',
+                len(skipped_shape),
+                skipped_shape[:3],
+            )
+
+        msg = model.load_state_dict(filtered_ckpt, strict=False)
 
         logging.info(msg)
     else:
