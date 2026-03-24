@@ -1,0 +1,104 @@
+
+experiment:
+  experiment_name: "eo-unite-panopticon-base"
+  exp_dir: "results/exps/eo-unite-panopticon"
+
+wandb:
+  project: eo-vae
+  entity: nleh
+  mode: online
+
+# Usage:
+#   python train_unite.py --config configs/eo-unite-panopticon.yaml
+#   python train_unite.py --config configs/eo-unite-panopticon.yaml \
+#     --ckpt /path/to/unite_base.pt          # init encoder/decoder from pretrained UNITE
+#   python train_unite.py --config configs/eo-unite-panopticon.yaml \
+#     --resume /path/to/last.ckpt            # resume full training run
+
+model:
+  _target_: eo_vae.models.eo_unite.EOUnite
+
+  encoder_model_size: "Base"   # depth=12, hidden=768, heads=12
+  decoder_model_size: "Base"   # layers=8, hidden=512
+
+  num_latent_tokens: 256
+  patch_size: 16
+  image_size: 256
+
+  # Match encoder hidden size so latent_tokens shape is compatible with UNITE pretraining.
+  # Base encoder hidden=768; use 1152 for Large.
+  diffusion_input_dim: 768
+
+  # Panopticon patch embedding: Conv3D + cross-attention channel fusion.
+  # Handles arbitrary-channel EO inputs (S2L2A, S1RTC, etc.).
+  patch_embed_type: "panopticon"
+  patch_embed_cfg:
+    attn_dim: 768       # internal attention dimension
+    embed_dim: 768      # output token dimension (must match encoder hidden)
+    patch_size: 16
+    chnfus_cfg:
+      num_heads: 8
+      layer_norm: true
+
+  # Symmetric decoder output head (PanopticonUnpatchify).
+  unpatchify_cfg:
+    dec_dim: 512        # decoder output token dimension (decoder hidden)
+    attn_dim: 512       # cross-attention dimension inside unpatchify
+    patch_size: 16
+    num_heads: 8
+
+  use_adain: true
+  cond_dim: 256         # modality conditioning dimension (wavelength + geo + time)
+
+  base_lr: 1.0e-4
+  final_lr: 1.0e-5
+  warmup_epochs: 1
+  decay_end_epoch: ${trainer.max_epochs}
+
+  # Flow matching settings
+  modulation_recon_timestep_max: 0.3
+  noising_t_start: 0.7
+  lognorm_mu: 0.0
+  lognorm_sigma: 1.0
+
+  loss_fn:
+    _target_: eo_vae.models.modules.eo_unite_loss.EOUniteLoss
+    pixel_weight: 1.0
+    perceptual_weight: 1.0
+    gen_loss_weight: 1.0
+    flow_steps_per_recon: 1
+    flow_mini_batch: 4
+    gradient_checkpointing_denoiser: false
+    # DOFA-LPIPS: wavelength-aware perceptual loss.
+    lpips_modalities: ["S2RGB", "S2L2A", "S1RTC"]
+    dofa_net:
+      _target_: eo_vae.models.dofa.build_dofa_for_lpips
+      ckpt_data: "/path/to/dofa_weights.pth"  # update before running
+      model_size: "large"
+
+
+datamodule:
+  _target_: eo_vae.datasets.terramesh_datamodule.TerraMeshDataModule
+  data_path: "/mnt/SSD2/nils/datasets/terramesh"
+  modalities: ["S2L2A", "S1RTC", "S2RGB"]
+  batch_size: 16
+  eval_batch_size: 32
+  num_workers: 4
+  train_collate_mode: "random"   # one modality per batch, randomly chosen
+  val_collate_mode: "S2L2A"
+  normalize: true
+  norm_method: zscore
+  norm_scheme: custom
+  return_metadata: true          # needed for lat/lon/time conditioning
+  target_size: [256, 256]
+
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 100
+  accelerator: gpu
+  precision: bf16-mixed
+  limit_val_batches: 100
+  limit_train_batches: 2000
+  devices: [0]
+  log_every_n_steps: 100
