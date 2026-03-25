@@ -82,17 +82,20 @@ class PanopticonUnpatchify(nn.Module):
         chn_embs = self.chnemb(chn_ids)       # [1, C, attn_dim]
         queries = chn_embs.expand(B, -1, -1)  # [B, C, attn_dim]
 
-        # Cross-attend: each channel query attends all spatial tokens
-        # queries: [B, C, D], kv: [B, L, D]
-        channel_feats = self.xattn(queries, kv, kv)  # [B, C, attn_dim]
+        # Decode each spatial position independently so spatial structure is preserved.
+        # Reshape kv: [B, L, D] → [B*L, 1, D]  (each patch as its own single-token context)
+        # Expand queries: [B, C, D] → [B*L, C, D]
+        kv_flat = kv.reshape(B * L, 1, self.attn_dim)
+        queries_flat = queries.unsqueeze(2).expand(-1, -1, L, -1)   # [B, C, L, D]
+        queries_flat = queries_flat.permute(0, 2, 1, 3).reshape(B * L, C, self.attn_dim)
 
-        # Decode to pixel patches: [B, C, P²]
-        patches = self.out_proj(channel_feats)  # [B, C, P²]
+        # Cross-attend: each channel query attends its own spatial token
+        channel_feats = self.xattn(queries_flat, kv_flat, kv_flat)  # [B*L, C, attn_dim]
 
-        # Reassemble patches into image: [B, C, Hp, Wp, P, P] → [B, C, H, W]
-        patches = patches.reshape(B, C, 1, 1, P, P).expand(-1, -1, Hp, Wp, -1, -1)
-        # Rearrange: (B, C, Hp, Wp, P, P) → (B, C, Hp*P, Wp*P)
-        out = patches.permute(0, 1, 2, 4, 3, 5).reshape(B, C, Hp * P, Wp * P)
+        # Decode to pixel patches and reassemble: [B*L, C, P²] → [B, C, H, W]
+        patches = self.out_proj(channel_feats)           # [B*L, C, P²]
+        patches = patches.reshape(B, Hp, Wp, C, P, P)
+        out = patches.permute(0, 3, 1, 4, 2, 5).reshape(B, C, Hp * P, Wp * P)
         return out
 
 

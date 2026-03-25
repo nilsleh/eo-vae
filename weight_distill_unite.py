@@ -126,10 +126,17 @@ class UniteDistillModule(L.LightningModule):
             cond = cond.expand(images.shape[0], -1)
         return cond
 
-    def _reconstruct(self, images: Tensor, wvs: Tensor, batch: dict | None) -> Tensor:
-        """Run reconstruction with frozen encoder/decoder and trainable IO layers."""
+    def _get_teacher_patch_hidden(
+        self, images: Tensor, teacher_tokens: Tensor, batch: dict | None
+    ) -> Tensor:
+        """Run the frozen encoder/decoder with teacher tokens; returns patch_hidden.
+
+        Using teacher tokens (not student) ensures the frozen body always sees the
+        correct token distribution, giving unpatchify a stable training signal from
+        the very first epoch.
+        """
+        wvs = self.rgb_wvs.to(images.device)
         cond = self._compute_cond(images, wvs, batch=batch)
-        student_tokens = self.model.patch_embed(images, wvs)
 
         B = images.shape[0]
         z_noise = torch.randn(
@@ -141,27 +148,41 @@ class UniteDistillModule(L.LightningModule):
 
         z = self.model.encoder(
             z_noise, t=flow_t, pos_embed=pos_embed,
-            img_patch_embed=student_tokens, precomputed_cond=cond,
+            img_patch_embed=teacher_tokens, precomputed_cond=cond,
             alibi_bias=self.model.alibi,
         )
         z = z[:, :self.model.num_latent_tokens]
         z_normed = self.model.encoder_ln(z)
-        return self.model.decode(z_normed, wvs)
+        z_up = self.model.up_sample_decoder(z_normed)
+        return self.model.decoder(z_up, drop_cls_token=False, return_hidden=True)
+
+    def _reconstruct(self, images: Tensor, wvs: Tensor, batch: dict | None) -> Tensor:
+        """Reconstruction for callbacks (e.g. ImageLogger): uses teacher tokens."""
+        with torch.no_grad():
+            t_feat = self.teacher_conv(images)
+            teacher_tokens = t_feat.flatten(2).transpose(1, 2)
+            patch_hidden = self._get_teacher_patch_hidden(images, teacher_tokens, batch)
+        return self.model.unpatchify(patch_hidden, wvs)
 
     def _forward(self, batch: dict) -> tuple[Tensor, Tensor, Tensor]:
         """Run one forward pass. Returns (recon, student_tokens, teacher_tokens)."""
         images = batch['image']   # [B, 3, H, W]
         wvs = self.rgb_wvs.to(images.device)
 
-        # --- Teacher tokens (no grad) ---
+        # --- Teacher tokens (no grad on teacher conv) ---
         with torch.no_grad():
-            # [B, 768, H/P, W/P] → [B, P², 768]
             t_feat = self.teacher_conv(images)
-            teacher_tokens = t_feat.flatten(2).transpose(1, 2)
+            teacher_tokens = t_feat.flatten(2).transpose(1, 2)  # [B, P², D]
 
-        # --- Student path ---
+        # --- Student token path (trains patch_embed via token_mse) ---
         student_tokens = self.model.patch_embed(images, wvs)  # [B, P², D]
-        recon = self._reconstruct(images, wvs, batch=batch)
+
+        # --- Teacher reconstruction path (trains unpatchify via recon_loss) ---
+        # Use teacher tokens so the frozen body sees its native token distribution.
+        # This decouples unpatchify training from the early-stage noisy student tokens.
+        with torch.no_grad():
+            patch_hidden = self._get_teacher_patch_hidden(images, teacher_tokens, batch)
+        recon = self.model.unpatchify(patch_hidden, wvs)
 
         return recon, student_tokens, teacher_tokens
 
