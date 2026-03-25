@@ -40,7 +40,7 @@ ENCODER_CONFIGS = {
 }
 
 DECODER_CONFIGS = {
-    'Base': (8, 512, 16, 2048),  # layers, hidden_size, num_heads, mlp_dim
+    'Base': (8, 768, 12, 3072),  # layers, hidden_size, num_heads, mlp_dim — matches UNITE-B
 }
 
 
