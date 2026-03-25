@@ -720,7 +720,7 @@ class TerraMeshDataModule(LightningDataModule):
         target_size=(224, 224),
         return_metadata=False,
         keep_keys_path=None,
-        overfit_n_batches=None,
+        overfit_batches=None,
         **kwargs,
     ):
         super().__init__()
@@ -734,7 +734,7 @@ class TerraMeshDataModule(LightningDataModule):
         self.norm_method = norm_method
         self.return_metadata = return_metadata
         self.keep_keys_path = keep_keys_path
-        self.overfit_n_batches = overfit_n_batches
+        self.overfit_batches = overfit_batches
         self._cached_batches = None
         self.kwargs = kwargs
 
@@ -901,9 +901,9 @@ class TerraMeshDataModule(LightningDataModule):
 
     def train_dataloader(self):
         """Return the training DataLoader with random modality selection."""
-        if self.overfit_n_batches is not None:
+        if self.overfit_batches is not None:
             if self._cached_batches is None:
-                print(f'Caching {self.overfit_n_batches} batches for overfitting...')
+                print(f'Caching {self.overfit_batches} batches for overfitting...')
                 probe = DataLoader(
                     self.train_dataset,
                     batch_size=None,
@@ -913,7 +913,7 @@ class TerraMeshDataModule(LightningDataModule):
                 batches = []
                 for batch in probe:
                     batches.append(batch)
-                    if len(batches) >= self.overfit_n_batches:
+                    if len(batches) >= self.overfit_batches:
                         break
                 self._cached_batches = batches
                 print(f'Cached {len(self._cached_batches)} batches.')
