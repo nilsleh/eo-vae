@@ -57,23 +57,23 @@ class EOUniteLoss(nn.Module):
         self.flow_mini_batch = max(1, flow_mini_batch)
         self.lpips_modalities = lpips_modalities if lpips_modalities is not None else ['S2RGB']
         self.gradient_checkpointing_denoiser = gradient_checkpointing_denoiser
-        self._dofa_net = dofa_net
         # DOFA-LPIPS backbone in this setup is trained with 224x224 positional embeddings.
         self.lpips_input_size = 224
 
-        # DOFA-LPIPS is lazy-initialized on first use
+        # Eagerly initialize DOFALPIPS so it is registered as a submodule and
+        # automatically moved to device with the parent model.
         self._dofa_lpips = None
+        if dofa_net is not None:
+            from eo_vae.models.modules.loss_utils import DOFALPIPS
+            self._dofa_lpips = DOFALPIPS(dofa_net)
 
     @property
     def dofa_lpips(self):
         if self._dofa_lpips is None:
-            from eo_vae.models.modules.loss_utils import DOFALPIPS
-            if self._dofa_net is None:
-                raise RuntimeError(
-                    'EOUniteLoss: dofa_net must be provided to use DOFA-LPIPS. '
-                    'Set perceptual_weight=0 or pass a dofa_net instance.'
-                )
-            self._dofa_lpips = DOFALPIPS(self._dofa_net)
+            raise RuntimeError(
+                'EOUniteLoss: dofa_net must be provided to use DOFA-LPIPS. '
+                'Set perceptual_weight=0 or pass a dofa_net instance.'
+            )
         return self._dofa_lpips
 
     def forward(
@@ -121,7 +121,7 @@ class EOUniteLoss(nn.Module):
         # --- Perceptual loss (DOFA-LPIPS) ---
         lpips_loss = torch.tensor(0.0, device=recon.device)
         if self.perceptual_weight > 0 and modality in self.lpips_modalities:
-            lpips_module = self.dofa_lpips.to(recon.device)
+            lpips_module = self.dofa_lpips
             # Keep EOUnite reconstruction/pixel losses at native resolution while
             # evaluating perceptual distance on DOFA's expected 224x224 grid.
             recon_lpips = F.interpolate(
