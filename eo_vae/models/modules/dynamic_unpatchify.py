@@ -83,14 +83,19 @@ class PanopticonUnpatchify(nn.Module):
         queries = chn_embs.expand(B, -1, -1)  # [B, C, attn_dim]
 
         # Decode each spatial position independently so spatial structure is preserved.
-        # Reshape kv: [B, L, D] → [B*L, 1, D]  (each patch as its own single-token context)
-        # Expand queries: [B, C, D] → [B*L, C, D]
-        kv_flat = kv.reshape(B * L, 1, self.attn_dim)
-        queries_flat = queries.unsqueeze(2).expand(-1, -1, L, -1)   # [B, C, L, D]
-        queries_flat = queries_flat.permute(0, 2, 1, 3).reshape(B * L, C, self.attn_dim)
-
-        # Cross-attend: each channel query attends its own spatial token
-        channel_feats = self.xattn(queries_flat, kv_flat, kv_flat)  # [B*L, C, attn_dim]
+        # kv: [B, L, D] — one projected decoder token per patch position.
+        # queries: [B, C, D] — one wavelength embedding per output channel.
+        #
+        # We want channel_feats[b, l, c] to depend on BOTH:
+        #   - kv[b, l]   → spatial content of patch l
+        #   - queries[c] → spectral identity of band c
+        #
+        # NOTE: Using cross-attention with kv_size=1 is degenerate — softmax([x]) = 1
+        # for all queries, so queries would have zero effect on the output.
+        # Instead, we add the two contributions directly (additive FiLM-style conditioning).
+        kv_flat = kv.unsqueeze(2).expand(-1, -1, C, -1)           # [B, L, C, D]
+        queries_flat = queries.unsqueeze(1).expand(-1, L, -1, -1)  # [B, L, C, D]
+        channel_feats = (kv_flat + queries_flat).reshape(B * L, C, self.attn_dim)
 
         # Decode to pixel patches and reassemble: [B*L, C, P²] → [B, C, H, W]
         patches = self.out_proj(channel_feats)           # [B*L, C, P²]

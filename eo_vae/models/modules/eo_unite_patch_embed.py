@@ -83,8 +83,8 @@ class _Conv3dWrapper(nn.Module):
         self.conv3d = nn.Conv3d(1, embed_dim, kernel_size=(1, P, P), stride=(1, P, P))
 
     def forward(self, x: Tensor) -> Tensor:
-        # x: [B, C, H, W]
-        x = self.conv3d(x.unsqueeze(1)).squeeze(1)  # [B, embed_dim, C, Hp, Wp]
+        # x: [B, C, H, W] → unsqueeze to [B, 1, C, H, W] for Conv3D input
+        x = self.conv3d(x.unsqueeze(1))  # [B, embed_dim, C, Hp, Wp]
         return x.flatten(-2).permute(0, 2, 3, 1)   # [B, C, L, embed_dim]
 
 

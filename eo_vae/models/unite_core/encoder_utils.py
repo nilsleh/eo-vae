@@ -278,7 +278,9 @@ class GaussianFourierEmbedding(nn.Module):
         t = t.to(device=dev, dtype=torch.float32)
         mask_special = t < 0
         mask_normal = ~mask_special
-        out = torch.empty(t.shape[0], self.hidden_size, device=dev, dtype=torch.float32)
+        out = torch.zeros(t.shape[0], self.hidden_size, device=dev, dtype=torch.float32)
+        if mask_special.any():
+            out[mask_special] = self.special_time_emb.to(dtype=torch.float32)
         if mask_normal.any():
             tn = t[mask_normal][:, None]
             angles = tn * self.W[None, :] * (2.0 * math.pi)
