@@ -934,6 +934,14 @@ class TerraMeshDataModule(LightningDataModule):
 
     def val_dataloader(self):
         """Return the validation DataLoader with deterministic modality."""
+        if self.overfit_batches is not None and self._cached_batches is not None:
+            return DataLoader(
+                CachedBatchDataset(self._cached_batches),
+                batch_size=None,
+                num_workers=0,
+                shuffle=False,
+                pin_memory=True,
+            )
         return DataLoader(
             self.val_dataset,
             batch_size=None,
