@@ -270,9 +270,10 @@ class DynamicHypernetworkPatchEmbed(nn.Module):
         self.weight_generator = TransformerWeightGenerator(
             input_dim=wv_planes,
             output_dim=embed_dim * patch_size * patch_size,
-            inter_dim=inter_dim,
+            embed_dim=embed_dim,
             num_layers=num_layers,
         )
+        self.scaler = 0.1
         self.fclayer = nn.Sequential(
             nn.Linear(wv_planes, wv_planes),
             nn.GELU(),
@@ -297,14 +298,15 @@ class DynamicHypernetworkPatchEmbed(nn.Module):
         )  # [C, wv_planes]
         wv_emb = self.fclayer(wv_emb)  # [C, wv_planes]
 
-        # Generate patch conv weights: [C, embed_dim * P * P]
-        weights = self.weight_generator(wv_emb)  # [C, embed_dim * P * P]
+        # Generate patch conv weights + bias from wavelength-conditioned transformer.
+        weights, bias = self.weight_generator(wv_emb)  # [C, embed_dim * P * P], [embed_dim]
         # Reshape to [embed_dim, C, P, P]
         weight = weights.view(C, self.embed_dim, P, P).permute(1, 0, 2, 3)
+        bias = bias.view(self.embed_dim) * self.scaler if bias is not None else None
 
         # Apply as standard patch conv (stride=P, no padding)
         # x: [B, C, H, W] → [B, embed_dim, H/P, W/P]
-        tokens = F.conv2d(x, weight * 0.1, stride=P)
+        tokens = F.conv2d(x, weight * self.scaler, bias=bias, stride=P)
         # Flatten spatial dims: [B, embed_dim, Hp, Wp] → [B, Hp*Wp, embed_dim]
         return tokens.flatten(2).transpose(1, 2)
 

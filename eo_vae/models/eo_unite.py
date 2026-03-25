@@ -276,6 +276,111 @@ class EOUnite(L.LightningModule):
         _, x_t, _ = self.transport.path_sampler.plan(t, x0, x1)
         return torch.where(mask, x_t, x)
 
+    def _prepare_wvs(self, wvs: Tensor | list | tuple, device: torch.device, dtype: torch.dtype) -> Tensor:
+        """Move wavelengths to model device and collapse batched [B, C] format to [C]."""
+        if not isinstance(wvs, torch.Tensor):
+            wvs = torch.as_tensor(wvs, dtype=dtype, device=device)
+        else:
+            wvs = wvs.to(device=device, dtype=dtype)
+
+        if wvs.ndim == 2:
+            # Collate pipelines may provide [B, C] even when wavelengths are batch-constant.
+            wvs = wvs[0]
+        if wvs.ndim != 1:
+            raise ValueError(f'Expected wvs shape [C] or [B, C], got {tuple(wvs.shape)}')
+        return wvs
+
+    def _compute_cond(
+        self,
+        wvs: Tensor,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        geo: Tensor | None = None,
+        time: Tensor | None = None,
+    ) -> Tensor:
+        """Build conditioning and ensure one conditioning vector per sample."""
+        if geo is not None:
+            geo = geo.to(device=device, dtype=dtype)
+        if time is not None:
+            time = time.to(device=device, dtype=dtype)
+
+        cond_raw = self.modality_conditioner(wvs, geo=geo, time=time)
+        cond = self.cond_proj(cond_raw)
+
+        if cond.ndim != 2:
+            raise ValueError(f'Expected cond shape [B, D], got {tuple(cond.shape)}')
+
+        # Conditioner can emit a single vector when geo/time are absent.
+        if cond.shape[0] == 1 and batch_size > 1:
+            cond = cond.expand(batch_size, -1)
+
+        if cond.shape[0] != batch_size:
+            raise ValueError(
+                f'Conditioning batch mismatch: cond has {cond.shape[0]} rows, expected {batch_size}.'
+            )
+        return cond
+
+    def forward(
+        self,
+        x: Tensor | dict,
+        wvs: Tensor | list | tuple | None = None,
+        geo: Tensor | None = None,
+        time: Tensor | None = None,
+        cond: Tensor | None = None,
+        apply_noising: bool = False,
+        return_latents: bool = False,
+        return_cond: bool = False,
+    ) -> Tensor | tuple[Tensor, ...]:
+        """Standalone reconstruction forward.
+
+        Accepts either a tensor input (`x=[B,C,H,W]`) plus `wvs`, or an EO-VAE
+        batch dict containing `image` and `wvs`. Returns reconstruction by default.
+        """
+        if isinstance(x, dict):
+            batch = x
+            images = batch['image']
+            if wvs is None:
+                wvs = batch['wvs']
+            if geo is None:
+                geo = self._build_geo(batch, images.device, images.dtype)
+            if time is None:
+                time = batch.get('time')
+        else:
+            images = x
+
+        if wvs is None:
+            raise ValueError('`wvs` must be provided when calling EOUnite.forward with tensor input.')
+
+        wvs = self._prepare_wvs(wvs, device=images.device, dtype=images.dtype)
+
+        if time is not None:
+            time = time.float()
+
+        if cond is None:
+            cond = self._compute_cond(
+                wvs=wvs,
+                batch_size=images.shape[0],
+                device=images.device,
+                dtype=images.dtype,
+                geo=geo,
+                time=time,
+            )
+        else:
+            cond = cond.to(device=images.device, dtype=images.dtype)
+
+        z = self.encode(images, wvs, cond=cond)
+        z_normed = self.encoder_ln(z)
+        z_for_decode = self._noising(z_normed) if apply_noising else z_normed
+        recon = self.decode(z_for_decode, wvs)
+
+        outputs = [recon]
+        if return_latents:
+            outputs.append(z_normed)
+        if return_cond:
+            outputs.append(cond)
+        return tuple(outputs) if len(outputs) > 1 else recon
+
     # ------------------------------------------------------------------
     # Training step
     # ------------------------------------------------------------------
@@ -291,8 +396,15 @@ class EOUnite(L.LightningModule):
         if time is not None:
             time = time.float()
 
-        cond_raw = self.modality_conditioner(wvs, geo=geo, time=time)  # [B, cond_dim]
-        cond = self.cond_proj(cond_raw)  # [B, encoder_hidden]
+        wvs = self._prepare_wvs(wvs, device=images.device, dtype=images.dtype)
+        cond = self._compute_cond(
+            wvs=wvs,
+            batch_size=images.shape[0],
+            device=images.device,
+            dtype=images.dtype,
+            geo=geo,
+            time=time,
+        )
 
         # Tokenizer forward
         z = self.encode(images, wvs, cond=cond)
@@ -331,8 +443,15 @@ class EOUnite(L.LightningModule):
         if time is not None:
             time = time.float()
 
-        cond_raw = self.modality_conditioner(wvs, geo=geo, time=time)
-        cond = self.cond_proj(cond_raw)
+        wvs = self._prepare_wvs(wvs, device=images.device, dtype=images.dtype)
+        cond = self._compute_cond(
+            wvs=wvs,
+            batch_size=images.shape[0],
+            device=images.device,
+            dtype=images.dtype,
+            geo=geo,
+            time=time,
+        )
 
         z = self.encode(images, wvs, cond=cond)
         z_normed = self.encoder_ln(z)
@@ -383,11 +502,25 @@ class EOUnite(L.LightningModule):
             Generated images [B, C, H, W].
         """
         device = self.latent_tokens.device
-        cond_raw = self.modality_conditioner(wvs, geo=geo, time=time)
-        cond = self.cond_proj(cond_raw)
+        if geo is None and time is None:
+            batch_size = num_samples
+        elif geo is not None:
+            batch_size = geo.shape[0]
+        else:
+            batch_size = time.shape[0]
 
-        noise = torch.randn(num_samples, self.num_latent_tokens, self.diffusion_input_dim, device=device)
-        pos_embed = self.latent_tokens[:, :self.num_latent_tokens].expand(num_samples, -1, -1)
+        wvs = self._prepare_wvs(wvs, device=device, dtype=self.latent_tokens.dtype)
+        cond = self._compute_cond(
+            wvs=wvs,
+            batch_size=batch_size,
+            device=device,
+            dtype=self.latent_tokens.dtype,
+            geo=geo,
+            time=time,
+        )
+
+        noise = torch.randn(batch_size, self.num_latent_tokens, self.diffusion_input_dim, device=device)
+        pos_embed = self.latent_tokens[:, :self.num_latent_tokens].expand(batch_size, -1, -1)
 
         sample_fn = self.flow_sampler.sample_ode(num_steps=num_steps)
 

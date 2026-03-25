@@ -93,29 +93,44 @@ class UniteDistillModule(L.LightningModule):
             'rgb_wvs', torch.tensor(RGB_WAVELENGTHS, dtype=torch.float32)
         )
 
-    def _forward(self, batch: dict) -> tuple[Tensor, Tensor, Tensor]:
-        """Run one forward pass. Returns (recon, student_tokens, teacher_tokens)."""
-        images = batch['image']   # [B, 3, H, W]
-        wvs = self.rgb_wvs.to(images.device)
+    def forward(self, images: Tensor, wvs: Tensor | None = None) -> Tensor:
+        """Reconstruction forward used by callbacks such as ImageLogger.
 
-        # --- Teacher tokens (no grad) ---
-        with torch.no_grad():
-            # [B, 768, H/P, W/P] → [B, P², 768]
-            t_feat = self.teacher_conv(images)
-            teacher_tokens = t_feat.flatten(2).transpose(1, 2)
+        During distillation training we use ``_forward(batch)`` to compute both
+        student/teacher tokens and reconstruction. This method exists so generic
+        callback code can call ``pl_module(images, wvs)`` for visualization.
+        """
+        if wvs is None:
+            wvs = self.rgb_wvs
+        if not isinstance(wvs, torch.Tensor):
+            wvs = torch.as_tensor(wvs, dtype=torch.float32)
+        wvs = wvs.to(images.device)
+        return self._reconstruct(images, wvs, batch=None)
 
-        # --- Modality conditioning (trainable) ---
-        geo = self.model._build_geo(batch, images.device, images.dtype)
-        time = batch.get('time')
-        if time is not None:
-            time = time.float().to(images.device)
+    def _compute_cond(self, images: Tensor, wvs: Tensor, batch: dict | None) -> Tensor:
+        """Build modality conditioning; gracefully fall back when metadata is absent."""
+        geo = None
+        time = None
+        if batch is not None:
+            geo = self.model._build_geo(batch, images.device, images.dtype)
+            time = batch.get('time')
+            if time is not None:
+                time = time.float().to(images.device)
+
         cond_raw = self.model.modality_conditioner(wvs, geo=geo, time=time)
-        cond = self.model.cond_proj(cond_raw)  # [B, encoder_hidden]
+        cond = self.model.cond_proj(cond_raw)
 
-        # --- Student patch embedding (trainable) ---
-        student_tokens = self.model.patch_embed(images, wvs)  # [B, P², D]
+        # Some conditioner implementations return a single conditioning vector
+        # when metadata is missing; expand to batch size for encoder use.
+        if cond.ndim == 2 and cond.shape[0] == 1 and images.shape[0] > 1:
+            cond = cond.expand(images.shape[0], -1)
+        return cond
 
-        # --- Frozen encoder + decoder ---
+    def _reconstruct(self, images: Tensor, wvs: Tensor, batch: dict | None) -> Tensor:
+        """Run reconstruction with frozen encoder/decoder and trainable IO layers."""
+        cond = self._compute_cond(images, wvs, batch=batch)
+        student_tokens = self.model.patch_embed(images, wvs)
+
         B = images.shape[0]
         z_noise = torch.randn(
             B, self.model.num_latent_tokens, self.model.diffusion_input_dim,
@@ -131,9 +146,22 @@ class UniteDistillModule(L.LightningModule):
         )
         z = z[:, :self.model.num_latent_tokens]
         z_normed = self.model.encoder_ln(z)
+        return self.model.decode(z_normed, wvs)
 
-        # --- Trainable unpatchify ---
-        recon = self.model.decode(z_normed, wvs)  # [B, 3, H, W]
+    def _forward(self, batch: dict) -> tuple[Tensor, Tensor, Tensor]:
+        """Run one forward pass. Returns (recon, student_tokens, teacher_tokens)."""
+        images = batch['image']   # [B, 3, H, W]
+        wvs = self.rgb_wvs.to(images.device)
+
+        # --- Teacher tokens (no grad) ---
+        with torch.no_grad():
+            # [B, 768, H/P, W/P] → [B, P², 768]
+            t_feat = self.teacher_conv(images)
+            teacher_tokens = t_feat.flatten(2).transpose(1, 2)
+
+        # --- Student path ---
+        student_tokens = self.model.patch_embed(images, wvs)  # [B, P², D]
+        recon = self._reconstruct(images, wvs, batch=batch)
 
         return recon, student_tokens, teacher_tokens
 
@@ -329,13 +357,15 @@ def run_distillation(
             monitor='val/total_loss', mode='min', save_last=True,
         )
         callbacks = [ckpt_cb, img_logger]
+        trainer_cfg = config.get('trainer', {})
         trainer_kwargs = dict(
             accelerator='gpu',
-            precision=config.get('trainer', {}).get('precision', 'bf16-mixed'),
-            devices=config.trainer.get('devices', [0]),
+            precision=trainer_cfg.get('precision', 'bf16-mixed'),
+            devices=trainer_cfg.get('devices', [0]),
             max_epochs=max_epochs,
-            limit_val_batches=100,
-            log_every_n_steps=50,
+            limit_train_batches=trainer_cfg.get('limit_train_batches', 1.0),
+            limit_val_batches=trainer_cfg.get('limit_val_batches', 1.0),
+            log_every_n_steps=trainer_cfg.get('log_every_n_steps', 50),
         )
 
     trainer = L.Trainer(
