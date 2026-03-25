@@ -610,6 +610,9 @@ class EOUnite(L.LightningModule):
             }
             sd = {RENAME.get(k, k): v for k, v in sd.items()}
 
+            # Strip _orig_mod prefix (from torch.compile wrapping in UNITE-B checkpoint)
+            sd = {k.replace('._orig_mod', ''): v for k, v in sd.items()}
+
             # Filter to only keys/shapes that exist in this model
             own_sd = self.state_dict()
             filtered = {}
