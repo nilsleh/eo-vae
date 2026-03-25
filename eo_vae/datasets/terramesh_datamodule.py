@@ -657,6 +657,23 @@ def paired_modality_collate_fn(
 # =============================================================================
 
 
+class CachedBatchDataset(torch.utils.data.Dataset):
+    """Map-style dataset wrapping a fixed list of pre-formed batches.
+
+    Used by TerraMeshDataModule when overfit_n_batches is set, to allow
+    repeatable overfitting on a small fixed set of batches.
+    """
+
+    def __init__(self, batches):
+        self.batches = batches
+
+    def __len__(self):
+        return len(self.batches)
+
+    def __getitem__(self, idx):
+        return self.batches[idx]
+
+
 class TerraMeshDataModule(LightningDataModule):
     """Lightning DataModule for TerraMesh dataset with configurable normalization.
 
@@ -703,6 +720,7 @@ class TerraMeshDataModule(LightningDataModule):
         target_size=(224, 224),
         return_metadata=False,
         keep_keys_path=None,
+        overfit_n_batches=None,
         **kwargs,
     ):
         super().__init__()
@@ -716,6 +734,8 @@ class TerraMeshDataModule(LightningDataModule):
         self.norm_method = norm_method
         self.return_metadata = return_metadata
         self.keep_keys_path = keep_keys_path
+        self.overfit_n_batches = overfit_n_batches
+        self._cached_batches = None
         self.kwargs = kwargs
 
         if self.keep_keys_path is not None and not os.path.exists(self.keep_keys_path):
@@ -881,6 +901,29 @@ class TerraMeshDataModule(LightningDataModule):
 
     def train_dataloader(self):
         """Return the training DataLoader with random modality selection."""
+        if self.overfit_n_batches is not None:
+            if self._cached_batches is None:
+                print(f'Caching {self.overfit_n_batches} batches for overfitting...')
+                probe = DataLoader(
+                    self.train_dataset,
+                    batch_size=None,
+                    num_workers=0,
+                    collate_fn=self.train_collate_fn,
+                )
+                batches = []
+                for batch in probe:
+                    batches.append(batch)
+                    if len(batches) >= self.overfit_n_batches:
+                        break
+                self._cached_batches = batches
+                print(f'Cached {len(self._cached_batches)} batches.')
+            return DataLoader(
+                CachedBatchDataset(self._cached_batches),
+                batch_size=None,
+                num_workers=0,
+                shuffle=True,
+                pin_memory=True,
+            )
         return DataLoader(
             self.train_dataset,
             batch_size=None,
